@@ -10,7 +10,7 @@
     "dev:electron": "node scripts/dev-electron.mjs",
     "start": "electron --no-sandbox electron/main.mjs",
     "build": "tsc && vite build && pnpm check:electron",
-    "check:electron": "node --check electron/main.mjs && node --check electron/adblock.mjs && node --check electron/proxy.mjs && node --check electron/store.mjs && node --check electron/preload.cjs && node --check electron/remote-preload.cjs && node --check scripts/dev-electron.mjs",
+    "check:electron": "node --check electron/main.mjs && node --check electron/adblock.mjs && node --check electron/proxy.mjs && node --check electron/store.mjs && node --check electron/i18n.mjs && node --check electron/preload.cjs && node --check electron/remote-preload.cjs && node --check scripts/dev-electron.mjs",
     "preview": "vite preview --host 127.0.0.1 --port 1421"
   },
   "devDependencies": {
@@ -20,6 +20,7 @@
   },
   "dependencies": {
     "@ghostery/adblocker": "^2.14.3",
+    "darkreader": "^4.9.125",
     "lucide": "^1.11.0"
   }
 }

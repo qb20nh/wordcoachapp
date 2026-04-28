@@ -15,6 +15,7 @@ const FILTER_LISTS = [
 
 const ENGINE_FILE = "engine.bin";
 const METADATA_FILE = "metadata.json";
+const FILTER_ENGINE_VERSION = 2;
 
 export class AdblockService {
   constructor(baseDir) {
@@ -44,7 +45,7 @@ export class AdblockService {
         fs.readFile(this.enginePath),
         readJson(this.metadataPath, {})
       ]);
-      if (!sameUrls(metadata.urls, FILTER_LISTS)) {
+      if (metadata.version !== FILTER_ENGINE_VERSION || !sameUrls(metadata.urls, FILTER_LISTS)) {
         this.cacheStale = true;
       }
       this.engine = FiltersEngine.deserialize(new Uint8Array(serialized));
@@ -109,6 +110,23 @@ export class AdblockService {
     return result.styles || "";
   }
 
+  requestBlocked(details) {
+    if (!this.engine || !details?.url) {
+      return false;
+    }
+    const result = this.engine.match(
+      Request.fromRawDetails({
+        requestId: String(details.id || ""),
+        tabId: Number(details.webContentsId) || 0,
+        url: details.url,
+        sourceUrl: details.referrer || details.initiator || "",
+        type: details.resourceType || "other",
+        _originalRequestDetails: details
+      })
+    );
+    return result.match === true;
+  }
+
   async fetchAndBuild() {
     this.status = {
       ...this.status,
@@ -129,6 +147,7 @@ export class AdblockService {
     await Promise.all([
       fs.writeFile(this.enginePath, Buffer.from(engine.serialize())),
       writeJson(this.metadataPath, {
+        version: FILTER_ENGINE_VERSION,
         updated_at: updatedAt,
         list_count: FILTER_LISTS.length,
         urls: FILTER_LISTS
@@ -156,50 +175,7 @@ async function fetchList(url) {
   if (!response.ok) {
     throw new Error(`Filter download failed ${response.status}: ${url}`);
   }
-  return cosmeticOnlyFilterText(url, await response.text());
-}
-
-function cosmeticOnlyFilterText(url, text) {
-  const lines = String(text || "")
-    .split(/\r?\n/)
-    .filter(isBasicCosmeticFilterLine);
-  return `! ${url}\n${lines.join("\n")}`;
-}
-
-function isBasicCosmeticFilterLine(line) {
-  const trimmed = String(line || "").trim();
-  if (!trimmed || trimmed.startsWith("!") || trimmed.startsWith("[") || trimmed.startsWith("@@")) {
-    return false;
-  }
-
-  const marker = cosmeticMarker(trimmed);
-  if (!marker) {
-    return false;
-  }
-
-  const domainPrefix = trimmed.slice(0, marker.index);
-  if (domainPrefix.includes("$") || domainPrefix.includes("/") || domainPrefix.includes("|")) {
-    return false;
-  }
-
-  const selector = trimmed.slice(marker.index + marker.value.length).trim();
-  if (!selector || selector.startsWith("+js(") || selector.startsWith("^")) {
-    return false;
-  }
-
-  return true;
-}
-
-function cosmeticMarker(line) {
-  const exceptionIndex = line.indexOf("#@#");
-  const hidingIndex = line.indexOf("##");
-  if (exceptionIndex !== -1 && (hidingIndex === -1 || exceptionIndex < hidingIndex)) {
-    return { index: exceptionIndex, value: "#@#" };
-  }
-  if (hidingIndex !== -1) {
-    return { index: hidingIndex, value: "##" };
-  }
-  return null;
+  return `! ${url}\n${await response.text()}`;
 }
 
 function sameUrls(left, right) {

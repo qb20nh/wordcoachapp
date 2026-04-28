@@ -10,41 +10,54 @@ import {
 } from "electron";
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
+import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { createProxyServer, hostAllowed } from "./proxy.mjs";
 import { AdblockService } from "./adblock.mjs";
+import {
+  acceptLanguageFor,
+  labelFor,
+  localeOptionsFor,
+  messagesFor,
+  normalizeLocaleChoice,
+  resolveLocale
+} from "./i18n.mjs";
 import { JsonStore } from "./store.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const require = createRequire(import.meta.url);
 const ROOT_DIR = path.resolve(__dirname, "..");
 const REMOTE_PRELOAD = path.join(__dirname, "remote-preload.cjs");
+const DARK_READER_PATH = require.resolve("darkreader");
 const WINDOW_WIDTH = 860;
 const WINDOW_HEIGHT = 860;
 const TOPBAR_HEIGHT = 86;
 const MOBILE_UA =
   "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 " +
   "(KHTML, like Gecko) Chrome/136.0.0.0 Mobile Safari/537.36";
-const GOOGLE_URL =
-  "https://www.google.co.in/search?q=google+word+coach&hl=en&gl=IN&pws=0&source=mobilesearchapp";
-const GOOGLE_SIGN_IN_URL =
-  "https://accounts.google.com/ServiceLogin?continue=" + encodeURIComponent(GOOGLE_URL);
+const GOOGLE_SEARCH_URL = "https://www.google.co.in/search";
 const PROVIDERS = [
-  { id: "dictionary", label: "Dictionary.com" },
-  { id: "merriam", label: "Merriam-Webster" },
-  { id: "naver", label: "Naver Dictionary" }
+  { id: "dictionary", labelKey: "provider_dictionary" },
+  { id: "merriam", labelKey: "provider_merriam" },
+  { id: "naver", labelKey: "provider_naver" }
 ];
 const DICTIONARY_MODES = [
-  { id: "dictionary", label: "Dictionary" },
-  { id: "thesaurus", label: "Thesaurus" }
+  { id: "dictionary", labelKey: "mode_dictionary" },
+  { id: "thesaurus", labelKey: "mode_thesaurus" }
 ];
 const PRELOAD_EAGERNESS_OPTIONS = [
-  { id: "off", label: "Off" },
-  { id: "dns", label: "DNS" },
-  { id: "preconnect", label: "TLS/TCP" },
-  { id: "pages", label: "HTTP" },
-  { id: "prerender", label: "Prerender" }
+  { id: "off", labelKey: "preload_off" },
+  { id: "dns", labelKey: "preload_dns" },
+  { id: "preconnect", labelKey: "preload_preconnect" },
+  { id: "pages", labelKey: "preload_pages" },
+  { id: "prerender", labelKey: "preload_prerender" }
+];
+const DARK_MODE_OPTIONS = [
+  { id: "system", labelKey: "dark_mode_system" },
+  { id: "dark", labelKey: "dark_mode_dark" },
+  { id: "off", labelKey: "dark_mode_off" }
 ];
 const PRELOAD_EAGERNESS_RANK = {
   off: 0,
@@ -75,7 +88,14 @@ const USER_LINK_TIME_ATTRIBUTE = "wordcoachLastUserLinkAt";
 const USER_LINK_CLICK_TTL_MS = 5000;
 const SYSTEM_COLOR_SCHEME_CACHE_MS = 5000;
 const THEME_SYNC_INTERVAL_MS = 5000;
+const REMOTE_THEME_RECHECK_DELAYS_MS = [900, 2400];
+const REMOTE_THEME_GATE_TIMEOUT_MS = 4000;
 const DICTIONARY_NAVIGATION_SYNC_GRACE_MS = 8000;
+const DARK_READER_THEME = {
+  brightness: 100,
+  contrast: 90,
+  sepia: 0
+};
 const BLOCKED_URL_PREFIXES = [
   "https://www.dictionary.com/articles",
   "https://www.dictionary.com/games",
@@ -98,12 +118,17 @@ let pendingDictionaryNavigation = null;
 let themeSyncTimer = null;
 let systemColorSchemeCache = { value: "light", expiresAt: 0 };
 let uiOverlayOpen = false;
+let darkReaderSourceCache = null;
 const remoteViewsByWebContentsId = new Map();
 const lastAllowedUrlByWebContentsId = new Map();
 const prerenderDictionaryViews = new Map();
 const prerenderUrlsByKey = new Map();
 const pendingBlockedDialogs = new Set();
 const cosmeticCssKeysByWebContentsId = new Map();
+const remoteThemeRunIdsByWebContentsId = new Map();
+const remoteThemeStateByWebContentsId = new Map();
+const preloadLoadsByWebContentsId = new Map();
+const remoteThemeReadyByWebContentsId = new Map();
 
 app.commandLine.appendSwitch("disable-quic");
 app.commandLine.appendSwitch("force-webrtc-ip-handling-policy", "disable_non_proxied_udp");
@@ -138,6 +163,7 @@ nativeTheme.on("updated", () => {
 async function start() {
   store = new JsonStore(app.getPath("userData"));
   await store.load();
+  syncNativeThemeSourceWithDesktop();
   adblocker = new AdblockService(app.getPath("userData"));
   await adblocker.loadCached();
   proxy = await createProxyServer();
@@ -162,7 +188,7 @@ async function start() {
     maxWidth: WINDOW_WIDTH,
     maxHeight: WINDOW_HEIGHT,
     resizable: false,
-    title: "Word Coach",
+    title: t("app_title"),
     webPreferences: {
       preload: path.join(__dirname, "preload.cjs"),
       contextIsolation: true,
@@ -213,13 +239,18 @@ async function configureRemoteSession(remoteSession) {
         callback({ cancel: true });
         return;
       }
+      if (!isMainFrameRequest(details) && adblocker?.requestBlocked(details)) {
+        recordBlockedUrl(details.url);
+        callback({ cancel: true });
+        return;
+      }
     }
     callback({});
   });
   remoteSession.webRequest.onBeforeSendHeaders((details, callback) => {
     const headers = {
       ...details.requestHeaders,
-      "Accept-Language": "en-US,en;q=0.9",
+      "Accept-Language": acceptLanguageFor(currentLocale()),
       "Sec-CH-Prefers-Color-Scheme": `"${currentColorScheme()}"`,
       "Sec-CH-UA-Mobile": "?1",
       "Sec-CH-UA-Platform": '"Android"',
@@ -233,7 +264,7 @@ function createRemoteViews(remoteSession) {
   coachView = createView(remoteSession, true);
   mainWindow.contentView.addChildView(coachView);
 
-  loadAllowedUrl(coachView, GOOGLE_URL);
+  loadAllowedUrl(coachView, googleUrl());
   if (currentPreloadEagerness() === "prerender") {
     activatePrerenderedDictionaryView(
       dictionaryKey(currentProvider(), currentDictionaryMode()),
@@ -264,6 +295,10 @@ function createView(remoteSession, includeExtractor) {
     remoteViewsByWebContentsId.delete(webContentsId);
     lastAllowedUrlByWebContentsId.delete(webContentsId);
     cosmeticCssKeysByWebContentsId.delete(webContentsId);
+    remoteThemeRunIdsByWebContentsId.delete(webContentsId);
+    remoteThemeStateByWebContentsId.delete(webContentsId);
+    preloadLoadsByWebContentsId.delete(webContentsId);
+    remoteThemeReadyByWebContentsId.delete(webContentsId);
   });
   view.webContents.setWindowOpenHandler(({ url }) => {
     if (urlAllowed(url)) {
@@ -294,12 +329,14 @@ function createView(remoteSession, includeExtractor) {
   view.webContents.on("did-navigate", (_event, url) => {
     rememberAllowedUrl(view, url);
     syncDictionaryStateFromUrl(view, url);
+    scheduleRemoteTheme(view, { recheck: true });
     applyCosmeticAdblockToView(view);
   });
   view.webContents.on("did-navigate-in-page", (_event, url, isMainFrame) => {
     if (isMainFrame) {
       rememberAllowedUrl(view, url);
       syncDictionaryStateFromUrl(view, url);
+      scheduleRemoteTheme(view, { sameDocument: true });
       applyCosmeticAdblockToView(view);
     }
   });
@@ -339,14 +376,29 @@ function layoutRemoteViews() {
     return;
   }
   const coachHeight = Math.floor(remoteHeight / 2);
-  coachView.setBounds({ x: 0, y: TOPBAR_HEIGHT, width: leftWidth, height: coachHeight });
-  dictionaryView.setBounds({
+  setReadyViewBounds(coachView, { x: 0, y: TOPBAR_HEIGHT, width: leftWidth, height: coachHeight });
+  setReadyViewBounds(dictionaryView, {
     x: leftWidth,
     y: TOPBAR_HEIGHT,
     width: rightWidth,
     height: remoteHeight
   });
   layoutInactivePrerenderDictionaryViews(leftWidth, rightWidth, remoteHeight);
+}
+
+function setReadyViewBounds(view, bounds) {
+  if (!remoteViewReadyForDisplay(view)) {
+    view.setBounds({ ...bounds, x: bounds.x + bounds.width + 1, height: 0 });
+    return;
+  }
+  view.setBounds(bounds);
+}
+
+function remoteViewReadyForDisplay(view) {
+  if (!view || view.webContents.isDestroyed() || currentColorScheme() !== "dark") {
+    return true;
+  }
+  return remoteThemeReadyByWebContentsId.get(view.webContents.id) !== false;
 }
 
 function layoutInactivePrerenderDictionaryViews(leftWidth, rightWidth, remoteHeight) {
@@ -363,7 +415,7 @@ function layoutInactivePrerenderDictionaryViews(leftWidth, rightWidth, remoteHei
 }
 
 function injectRemoteScripts(view, includeExtractor) {
-  applyColorSchemeToView(view);
+  scheduleRemoteTheme(view, { recheck: true });
   const guard = readText(path.join(ROOT_DIR, "src", "injected", "network_guard.js"));
   const customCss = readText(path.join(ROOT_DIR, "custom.css"));
   const extractor = includeExtractor
@@ -388,7 +440,9 @@ function handleRemoteNavigation(view, event, url) {
     event.preventDefault();
     recordBlockedUrl(targetUrl);
     showBlockedNavigationDialogIfUserClick(view, targetUrl);
+    return;
   }
+  markRemoteThemePending(view);
 }
 
 function handleCaptureNavigation(event, url) {
@@ -433,13 +487,36 @@ function registerIpc() {
     syncDictionaryPrerenderMode();
     scheduleNetworkWarmup();
   });
+  ipcMain.handle("wordcoach:set-dark-mode", async (_event, mode) => {
+    await store.setDarkMode(parseDarkMode(mode));
+    systemColorSchemeCache.expiresAt = 0;
+    syncNativeThemeSourceWithDesktop();
+    applyColorSchemeToRemoteWebContents();
+    sendSnapshot();
+  });
+  ipcMain.handle("wordcoach:set-cosmetic-adblock", async (_event, enabled) => {
+    await store.setCosmeticAdblock(Boolean(enabled));
+    if (cosmeticAdblockEnabled()) {
+      applyCosmeticAdblockToRemoteWebContents();
+    } else {
+      clearCosmeticAdblockFromRemoteWebContents();
+    }
+    sendSnapshot();
+  });
+  ipcMain.handle("wordcoach:set-locale-choice", async (_event, choice) => {
+    await store.setLocaleChoice(normalizeLocaleChoice(choice));
+    mainWindow?.setTitle(t("app_title"));
+    reloadRemoteViewsForLocale();
+    scheduleNetworkWarmup();
+    sendSnapshot();
+  });
   ipcMain.handle("wordcoach:set-ui-overlay-open", (_event, open) => {
     uiOverlayOpen = Boolean(open);
     layoutRemoteViews();
   });
   ipcMain.handle("wordcoach:open-google-sign-in", () => {
     if (coachView) {
-      loadAllowedUrl(coachView, GOOGLE_SIGN_IN_URL);
+      loadAllowedUrl(coachView, googleSignInUrl());
     }
   });
   ipcMain.handle("wordcoach:reload-coach", () => {
@@ -460,9 +537,9 @@ function registerIpc() {
   });
   ipcMain.handle("wordcoach:export-history", async () => {
     const result = await dialog.showSaveDialog(mainWindow, {
-      title: "Export Word Coach history",
+      title: t("export_history_title"),
       defaultPath: "wordcoach-history.wcoach.json",
-      filters: [{ name: "Word Coach export", extensions: ["json"] }]
+      filters: [{ name: t("word_coach_export"), extensions: ["json"] }]
     });
     if (result.canceled || !result.filePath) {
       return null;
@@ -472,9 +549,9 @@ function registerIpc() {
   });
   ipcMain.handle("wordcoach:import-history", async () => {
     const result = await dialog.showOpenDialog(mainWindow, {
-      title: "Import Word Coach history",
+      title: t("import_history_title"),
       properties: ["openFile"],
-      filters: [{ name: "Word Coach export", extensions: ["json"] }]
+      filters: [{ name: t("word_coach_export"), extensions: ["json"] }]
     });
     if (result.canceled || !result.filePaths[0]) {
       return null;
@@ -486,22 +563,33 @@ function registerIpc() {
   ipcMain.handle("wordcoach:update-adblock-filters", async () => {
     const status = adblocker
       ? await adblocker.updateFilters()
-      : { ready: false, updating: false, updated_at: null, list_count: 0, error: "Adblock unavailable" };
+      : { ready: false, updating: false, updated_at: null, list_count: 0, error: t("adblock_unavailable") };
     sendSnapshot();
     applyCosmeticAdblockToRemoteWebContents();
     return status;
   });
+  ipcMain.handle("wordcoach:darkreader-fetch", async (event, url, pageUrl) =>
+    fetchDarkReaderResource(event.sender, url, pageUrl)
+  );
 }
 
 function appSnapshot() {
   const snapshot = store.snapshot();
+  const locale = currentLocale();
   return {
     provider: snapshot.provider,
-    dictionary_providers: PROVIDERS,
+    dictionary_providers: localizedOptions(PROVIDERS, locale),
     dictionary_mode: snapshot.dictionary_mode,
-    dictionary_modes: DICTIONARY_MODES,
+    dictionary_modes: localizedOptions(DICTIONARY_MODES, locale),
     preload_eagerness: snapshot.preload_eagerness,
-    preload_eagerness_options: PRELOAD_EAGERNESS_OPTIONS,
+    preload_eagerness_options: localizedOptions(PRELOAD_EAGERNESS_OPTIONS, locale),
+    dark_mode: snapshot.dark_mode,
+    dark_mode_options: localizedOptions(DARK_MODE_OPTIONS, locale),
+    cosmetic_adblock: snapshot.cosmetic_adblock,
+    locale_choice: currentLocaleChoice(),
+    resolved_locale: locale,
+    locale_options: localeOptionsFor(locale),
+    messages: messagesFor(locale),
     current_word: snapshot.current_word,
     proxy_addr: proxy.addr,
     proxy_blocked_hosts: proxy.blockedHosts(),
@@ -518,10 +606,66 @@ function appSnapshot() {
 }
 
 function currentColorScheme() {
+  const mode = currentDarkModeSetting();
+  if (mode === "dark") {
+    return "dark";
+  }
+  if (mode === "off") {
+    return "light";
+  }
   if (nativeTheme.shouldUseDarkColors) {
     return "dark";
   }
   return cachedSystemColorScheme();
+}
+
+function currentDarkModeSetting() {
+  return parseDarkMode(store?.snapshot().dark_mode);
+}
+
+function cosmeticAdblockEnabled() {
+  return store?.snapshot().cosmetic_adblock !== false;
+}
+
+function currentLocaleChoice() {
+  return normalizeLocaleChoice(store?.snapshot().locale_choice);
+}
+
+function currentLocale() {
+  return resolveLocale(currentLocaleChoice(), systemLocale());
+}
+
+function systemLocale() {
+  try {
+    return app.getLocale();
+  } catch {
+    return "en";
+  }
+}
+
+function t(key) {
+  return labelFor(currentLocale(), key);
+}
+
+function localizedOptions(options, locale = currentLocale()) {
+  return options.map((option) => ({
+    id: option.id,
+    label: labelFor(locale, option.labelKey)
+  }));
+}
+
+function googleUrl(locale = currentLocale()) {
+  const url = new URL(GOOGLE_SEARCH_URL);
+  url.searchParams.set("q", "google word coach");
+  url.searchParams.set("hl", locale);
+  url.searchParams.set("gl", "IN");
+  url.searchParams.set("pws", "0");
+  url.searchParams.set("source", "mobilesearchapp");
+  return url.toString();
+}
+
+function googleSignInUrl() {
+  return "https://accounts.google.com/ServiceLogin?continue=" + encodeURIComponent(googleUrl());
 }
 
 function startThemeSyncTimer() {
@@ -542,7 +686,15 @@ function syncNativeThemeSourceWithDesktop() {
     value: detectedScheme,
     expiresAt: Date.now() + SYSTEM_COLOR_SCHEME_CACHE_MS
   };
-  const nextSource = detectedScheme === "dark" ? "dark" : "system";
+  const darkMode = currentDarkModeSetting();
+  const nextSource =
+    darkMode === "dark"
+      ? "dark"
+      : darkMode === "off"
+        ? "light"
+        : detectedScheme === "dark"
+          ? "dark"
+          : "system";
   if (nativeTheme.themeSource === nextSource) {
     return false;
   }
@@ -673,34 +825,521 @@ function readDesktopSetting(command, args) {
 
 function applyColorSchemeToRemoteWebContents() {
   for (const view of remoteViewsByWebContentsId.values()) {
-    applyColorSchemeToView(view);
+    scheduleRemoteTheme(view, { recheck: true });
   }
   if (pagePreloadWindow && !pagePreloadWindow.isDestroyed()) {
-    applyColorSchemeToWebContents(pagePreloadWindow.webContents);
+    applyColorSchemeHintToWebContents(pagePreloadWindow.webContents).catch(() => undefined);
   }
 }
 
 function applyColorSchemeToView(view) {
+  scheduleRemoteTheme(view);
+}
+
+function scheduleRemoteTheme(view, options = {}) {
   if (!view || view.webContents.isDestroyed()) {
     return;
   }
-  applyColorSchemeToWebContents(view.webContents);
+  if (options.recheck) {
+    markRemoteThemePending(view);
+  }
+  applyRemoteThemeToView(view, {
+    forceNativeCheck: Boolean(options.recheck),
+    sameDocument: Boolean(options.sameDocument)
+  });
+  if (options.recheck) {
+    for (const delay of REMOTE_THEME_RECHECK_DELAYS_MS) {
+      setTimeout(() => applyRemoteThemeToView(view, { forceNativeCheck: true }), delay);
+    }
+  }
 }
 
-function applyColorSchemeToWebContents(webContents) {
+function applyRemoteThemeToView(view, options = {}) {
+  if (!view || view.webContents.isDestroyed()) {
+    return;
+  }
+  applyRemoteThemeToWebContents(view.webContents, options).catch(() =>
+    markRemoteThemeReady(view.webContents)
+  );
+}
+
+async function applyRemoteThemeToWebContents(webContents, options = {}) {
+  if (!webContents || webContents.isDestroyed()) {
+    return;
+  }
+  const webContentsId = webContents.id;
+  const runId = (remoteThemeRunIdsByWebContentsId.get(webContentsId) || 0) + 1;
+  remoteThemeRunIdsByWebContentsId.set(webContentsId, runId);
   const scheme = currentColorScheme();
+  const url = webContents.getURL();
+  await applyColorSchemeHintToWebContents(webContents, scheme);
+  if (!remoteThemeRunActive(webContents, runId)) {
+    return;
+  }
+
+  if (scheme !== "dark") {
+    await setDarkReaderEnabled(webContents, false);
+    remoteThemeStateByWebContentsId.set(webContentsId, {
+      url,
+      scheme,
+      nativeDark: false,
+      darkReaderEnabled: false
+    });
+    markRemoteThemeReady(webContents);
+    return;
+  }
+
+  const previous = remoteThemeStateByWebContentsId.get(webContentsId);
+  if (previous?.scheme === scheme && (previous.url === url || options.sameDocument)) {
+    if (previous.darkReaderEnabled) {
+      const enabled = await setDarkReaderEnabled(webContents, true);
+      remoteThemeStateByWebContentsId.set(webContentsId, {
+        url,
+        scheme,
+        nativeDark: false,
+        darkReaderEnabled: enabled
+      });
+      markRemoteThemeReady(webContents);
+      return;
+    }
+    if (options.sameDocument && previous.nativeDark) {
+      await setDarkReaderEnabled(webContents, false);
+      remoteThemeStateByWebContentsId.set(webContentsId, {
+        url,
+        scheme,
+        nativeDark: true,
+        darkReaderEnabled: false
+      });
+      markRemoteThemeReady(webContents);
+      return;
+    }
+  }
+
+  const canReuse =
+    !options.forceNativeCheck &&
+    previous?.url === url &&
+    previous?.scheme === scheme &&
+    typeof previous.nativeDark === "boolean";
+  if (canReuse) {
+    const enabled = previous.nativeDark
+      ? await setDarkReaderEnabled(webContents, false)
+      : await setDarkReaderEnabled(webContents, true);
+    remoteThemeStateByWebContentsId.set(webContentsId, {
+      url,
+      scheme,
+      nativeDark: previous.nativeDark,
+      darkReaderEnabled: enabled
+    });
+    markRemoteThemeReady(webContents);
+    return;
+  }
+
+  if (previous?.darkReaderEnabled) {
+    await setDarkReaderEnabled(webContents, false);
+  }
+  if (!remoteThemeRunActive(webContents, runId)) {
+    return;
+  }
+
+  const nativeDark = await remotePageAppearsNativeDark(webContents);
+  if (!remoteThemeRunActive(webContents, runId)) {
+    return;
+  }
+
+  const darkReaderEnabled = nativeDark === true ? false : await setDarkReaderEnabled(webContents, true);
+  if (nativeDark) {
+    await setDarkReaderEnabled(webContents, false);
+  }
+  remoteThemeStateByWebContentsId.set(webContentsId, {
+    url,
+    scheme,
+    nativeDark,
+    darkReaderEnabled
+  });
+  markRemoteThemeReady(webContents);
+}
+
+function markRemoteThemePending(view) {
+  if (!view || view.webContents.isDestroyed() || currentColorScheme() !== "dark") {
+    return;
+  }
+  const webContentsId = view.webContents.id;
+  remoteThemeReadyByWebContentsId.set(webContentsId, false);
+  layoutRemoteViews();
+  setTimeout(() => {
+    if (remoteThemeReadyByWebContentsId.get(webContentsId) === false) {
+      remoteThemeReadyByWebContentsId.set(webContentsId, true);
+      layoutRemoteViews();
+    }
+  }, REMOTE_THEME_GATE_TIMEOUT_MS);
+}
+
+function markRemoteThemeReady(webContents) {
+  if (!webContents || webContents.isDestroyed()) {
+    return;
+  }
+  remoteThemeReadyByWebContentsId.set(webContents.id, true);
+  layoutRemoteViews();
+}
+
+function remoteThemeRunActive(webContents, runId) {
+  return (
+    webContents &&
+    !webContents.isDestroyed() &&
+    remoteThemeRunIdsByWebContentsId.get(webContents.id) === runId
+  );
+}
+
+function applyColorSchemeHintToWebContents(webContents, scheme = currentColorScheme()) {
+  if (!webContents || webContents.isDestroyed()) {
+    return Promise.resolve();
+  }
   const script = `(() => {
     const root = document.documentElement;
     if (!root) {
       return;
     }
-    const mediaDark = Boolean(window.matchMedia?.("(prefers-color-scheme: dark)")?.matches);
-    const scheme = mediaDark ? "dark" : ${JSON.stringify(scheme)};
+    const scheme = ${JSON.stringify(scheme)};
     root.dataset[${JSON.stringify(COLOR_SCHEME_ATTRIBUTE)}] = scheme;
-    root.dataset[${JSON.stringify(COLOR_SCHEME_SOURCE_ATTRIBUTE)}] = mediaDark ? "media" : "main";
+    root.dataset[${JSON.stringify(COLOR_SCHEME_SOURCE_ATTRIBUTE)}] = "main";
     root.style.colorScheme = scheme;
   })();`;
-  webContents.executeJavaScript(script, true).catch(() => undefined);
+  return webContents.executeJavaScript(script, true).catch(() => undefined);
+}
+
+async function remotePageAppearsNativeDark(webContents) {
+  if (!webContents || webContents.isDestroyed()) {
+    return null;
+  }
+  const script = `(() => {
+    const parseColor = (value) => {
+      const match = String(value || "").match(/rgba?\\(([^)]+)\\)/i);
+      if (!match) {
+        return null;
+      }
+      const parts = match[1].split(",").map((part) => part.trim());
+      const channel = (part) => {
+        if (part.endsWith("%")) {
+          return Math.round(Number(part.slice(0, -1)) * 2.55);
+        }
+        return Number(part);
+      };
+      const r = channel(parts[0]);
+      const g = channel(parts[1]);
+      const b = channel(parts[2]);
+      const a = parts[3] === undefined ? 1 : Number(parts[3]);
+      if (![r, g, b, a].every(Number.isFinite)) {
+        return null;
+      }
+      return { r, g, b, a };
+    };
+    const luminance = (color) => {
+      const linear = [color.r, color.g, color.b].map((value) => {
+        const channel = Math.max(0, Math.min(255, value)) / 255;
+        return channel <= 0.03928 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4;
+      });
+      return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2];
+    };
+    const viewportArea = Math.max(1, window.innerWidth * window.innerHeight);
+    const visible = (element) => {
+      if (!element) {
+        return false;
+      }
+      if (element === document.documentElement || element === document.body) {
+        return true;
+      }
+      const rect = element.getBoundingClientRect();
+      const style = window.getComputedStyle(element);
+      return rect.width > 0 && rect.height > 0 && style.display !== "none" && style.visibility !== "hidden";
+    };
+    const area = (element) => {
+      if (element === document.documentElement || element === document.body) {
+        return viewportArea;
+      }
+      const rect = element.getBoundingClientRect();
+      return Math.max(0, rect.width * rect.height);
+    };
+    const effectiveBackground = (element) => {
+      for (let current = element; current; current = current.parentElement) {
+        const color = parseColor(window.getComputedStyle(current).backgroundColor);
+        if (color && color.a >= 0.35) {
+          return color;
+        }
+      }
+      return { r: 255, g: 255, b: 255, a: 1 };
+    };
+    const textContrastOnDarkBackground = (scope, maxArea) => {
+      const selector = [
+        "h1",
+        "h2",
+        "h3",
+        "h4",
+        "p",
+        "span",
+        "a",
+        "button",
+        "li",
+        "td",
+        "th",
+        "label",
+        "input",
+        "textarea",
+        "select",
+        "[role='button']"
+      ].join(",");
+      const source = scope || document.body || document.documentElement;
+      const nodes = Array.from(source.querySelectorAll?.(selector) || [])
+        .map((element) => ({ element, area: area(element) }))
+        .filter((item) => item.area > 0)
+        .sort((left, right) => right.area - left.area)
+        .slice(0, 120);
+      let darkBgArea = 0;
+      let readableArea = 0;
+      let unreadableArea = 0;
+      for (const item of nodes) {
+        const element = item.element;
+        if (!visible(element)) {
+          continue;
+        }
+        const text = String(element.value || element.innerText || element.textContent || "").trim();
+        if (!text) {
+          continue;
+        }
+        const sampleArea = Math.min(maxArea, item.area);
+        const bgLum = luminance(effectiveBackground(element));
+        if (bgLum > 0.45) {
+          continue;
+        }
+        const foreground = parseColor(window.getComputedStyle(element).color);
+        if (!foreground || foreground.a < 0.35) {
+          continue;
+        }
+        darkBgArea += sampleArea;
+        if (luminance(foreground) <= 0.45) {
+          unreadableArea += sampleArea;
+        } else {
+          readableArea += sampleArea;
+        }
+      }
+      return { darkBgArea, readableArea, unreadableArea };
+    };
+    const hasUnreadableTextOnDarkBackground = (scope, maxArea) => {
+      const contrast = textContrastOnDarkBackground(scope, maxArea);
+      return (
+        contrast.darkBgArea >= maxArea * 0.02 &&
+        contrast.unreadableArea >= maxArea * 0.01 &&
+        contrast.unreadableArea > contrast.readableArea * 1.2
+      );
+    };
+    const samples = [];
+    const add = (element, root) => {
+      if (!visible(element)) {
+        return;
+      }
+      const sampleArea = area(element);
+      if (sampleArea <= 0) {
+        return;
+      }
+      const background = effectiveBackground(element);
+      samples.push({
+        area: Math.min(viewportArea, sampleArea),
+        luminance: luminance(background),
+        root
+      });
+    };
+    const gameRoot = document.querySelector("div[class*='knowledge_game']");
+    if (gameRoot && visible(gameRoot)) {
+      const gameArea = Math.max(1, area(gameRoot));
+      const gameSamples = [];
+      const addGameSample = (element) => {
+        if (!visible(element)) {
+          return;
+        }
+        const sampleArea = Math.min(gameArea, area(element));
+        if (sampleArea <= 0) {
+          return;
+        }
+        gameSamples.push({
+          area: sampleArea,
+          luminance: luminance(effectiveBackground(element))
+        });
+      };
+      addGameSample(gameRoot);
+      Array.from(gameRoot.querySelectorAll("div, section, article, table, button, [role='button']"))
+        .map((element) => ({ element, area: area(element) }))
+        .filter((item) => item.area >= gameArea * 0.08)
+        .sort((left, right) => right.area - left.area)
+        .slice(0, 24)
+        .forEach((item) => addGameSample(item.element));
+      if (gameSamples.length > 0) {
+        const rootSample = gameSamples[0];
+        const darkArea = gameSamples
+          .filter((sample) => sample.luminance <= 0.45)
+          .reduce((total, sample) => total + sample.area, 0);
+        const lightArea = gameSamples
+          .filter((sample) => sample.luminance >= 0.65)
+          .reduce((total, sample) => total + sample.area, 0);
+        const nativeGameDark =
+          (rootSample.luminance <= 0.45 && lightArea < gameArea * 0.4) ||
+          (darkArea >= gameArea * 0.35 && darkArea > lightArea * 1.2);
+        return nativeGameDark && !hasUnreadableTextOnDarkBackground(gameRoot, gameArea);
+      }
+    }
+    for (const selector of [
+      "html",
+      "body",
+      "main",
+      "#app",
+      "#root",
+      "[role='main']",
+      "div[class*='knowledge_game']"
+    ]) {
+      document.querySelectorAll(selector).forEach((element) => add(element, true));
+    }
+    const elements = Array.from(document.body?.querySelectorAll("main, article, section, [role='main'], div, table") || [])
+      .map((element) => ({ element, area: area(element) }))
+      .filter((item) => item.area >= viewportArea * 0.08)
+      .sort((left, right) => right.area - left.area)
+      .slice(0, 24);
+    for (const item of elements) {
+      add(item.element, false);
+    }
+    if (samples.length === 0) {
+      return null;
+    }
+    const rootDark = samples.some(
+      (sample) => sample.root && sample.area >= viewportArea * 0.2 && sample.luminance <= 0.45
+    );
+    const darkArea = samples
+      .filter((sample) => sample.luminance <= 0.45)
+      .reduce((total, sample) => total + sample.area, 0);
+    const lightArea = samples
+      .filter((sample) => sample.luminance >= 0.65)
+      .reduce((total, sample) => total + sample.area, 0);
+    const nativeDark = rootDark || (darkArea >= viewportArea * 0.35 && darkArea > lightArea * 1.2);
+    return nativeDark && !hasUnreadableTextOnDarkBackground(document.body || document.documentElement, viewportArea);
+  })();`;
+  return webContents.executeJavaScript(script, true).catch(() => null);
+}
+
+async function setDarkReaderEnabled(webContents, enabled) {
+  if (!webContents || webContents.isDestroyed()) {
+    return false;
+  }
+  if (enabled) {
+    await ensureDarkReaderInjected(webContents);
+  }
+  if (webContents.isDestroyed()) {
+    return false;
+  }
+  const script = `(() => {
+    const root = document.documentElement;
+    const enabled = ${JSON.stringify(Boolean(enabled))};
+    if (!enabled) {
+      delete root.dataset.wordcoachDarkReader;
+      if (!window.DarkReader) {
+        return false;
+      }
+      try {
+        window.DarkReader.auto?.(false);
+        window.DarkReader.disable?.();
+      } catch (_) {}
+      return Boolean(window.DarkReader.isEnabled?.());
+    }
+    if (!window.DarkReader?.enable) {
+      return false;
+    }
+    try {
+      window.DarkReader.setFetchMethod?.(async (url) => {
+        const result = await window.__wordCoachDarkReaderFetch(String(url || ""));
+        const bytes = Uint8Array.from(atob(result.body), (char) => char.charCodeAt(0));
+        return new Response(bytes, {
+          status: result.status || 200,
+          statusText: result.statusText || "OK",
+          headers: result.contentType ? { "content-type": result.contentType } : undefined
+        });
+      });
+      if (!window.DarkReader.isEnabled?.()) {
+        window.DarkReader.enable(${JSON.stringify(DARK_READER_THEME)});
+      }
+      root.dataset.wordcoachDarkReader = "enabled";
+      return Boolean(window.DarkReader.isEnabled?.());
+    } catch (_) {
+      return false;
+    }
+  })();`;
+  return Boolean(await webContents.executeJavaScript(script, true).catch(() => false));
+}
+
+async function ensureDarkReaderInjected(webContents) {
+  if (!webContents || webContents.isDestroyed()) {
+    return false;
+  }
+  const ready = await webContents
+    .executeJavaScript("Boolean(window.DarkReader?.enable)", true)
+    .catch(() => false);
+  if (ready || webContents.isDestroyed()) {
+    return Boolean(ready);
+  }
+  await webContents.executeJavaScript(darkReaderSource(), true).catch(() => undefined);
+  return Boolean(
+    await webContents
+      .executeJavaScript("Boolean(window.DarkReader?.enable)", true)
+      .catch(() => false)
+  );
+}
+
+function darkReaderSource() {
+  if (darkReaderSourceCache === null) {
+    darkReaderSourceCache = readText(DARK_READER_PATH);
+  }
+  return darkReaderSourceCache;
+}
+
+async function fetchDarkReaderResource(sender, rawUrl, rawPageUrl) {
+  if (!sender || sender.isDestroyed()) {
+    throw new Error("Renderer unavailable");
+  }
+  const fromRemoteView = remoteViewsByWebContentsId.has(sender.id);
+  const fromPreloadWindow = pagePreloadWindow?.webContents.id === sender.id;
+  if (!fromRemoteView && !fromPreloadWindow) {
+    throw new Error("Renderer not allowed");
+  }
+  const pageUrl = normalizeUrl(rawPageUrl) || sender.getURL();
+  const resourceUrl = resolveResourceUrl(rawUrl, pageUrl);
+  if (!remoteUrlAllowed(resourceUrl)) {
+    throw new Error("Resource URL not allowed");
+  }
+  const response = await fetch(resourceUrl, {
+    headers: {
+      Accept: "text/css,image/*,*/*;q=0.8",
+      "Accept-Language": acceptLanguageFor(currentLocale()),
+      Referer: pageUrl,
+      "User-Agent": MOBILE_UA
+    },
+    redirect: "follow"
+  });
+  if (!response.ok) {
+    throw new Error(`Dark Reader fetch failed ${response.status}: ${resourceUrl}`);
+  }
+  const contentType = response.headers.get("content-type") || "";
+  const buffer = Buffer.from(await response.arrayBuffer());
+  const body = buffer.toString("base64");
+  return {
+    url: response.url || resourceUrl,
+    status: response.status,
+    statusText: response.statusText,
+    contentType,
+    body
+  };
+}
+
+function resolveResourceUrl(rawUrl, pageUrl) {
+  try {
+    return new URL(String(rawUrl || ""), pageUrl).toString();
+  } catch {
+    throw new Error("Invalid resource URL");
+  }
 }
 
 function applyCosmeticAdblockToRemoteWebContents() {
@@ -710,7 +1349,7 @@ function applyCosmeticAdblockToRemoteWebContents() {
 }
 
 async function applyCosmeticAdblockToView(view) {
-  if (!adblocker || !view || view.webContents.isDestroyed()) {
+  if (!adblocker || !cosmeticAdblockEnabled() || !view || view.webContents.isDestroyed()) {
     return;
   }
   const webContents = view.webContents;
@@ -725,6 +1364,14 @@ async function applyCosmeticAdblockToView(view) {
     return;
   }
   await injectCosmeticAdblockCss(webContents, css).catch(() => undefined);
+}
+
+function clearCosmeticAdblockFromRemoteWebContents() {
+  for (const view of remoteViewsByWebContentsId.values()) {
+    if (view && !view.webContents.isDestroyed()) {
+      injectCosmeticAdblockCss(view.webContents, "").catch(() => undefined);
+    }
+  }
 }
 
 function collectAdblockFeatures(webContents) {
@@ -956,10 +1603,10 @@ async function showBlockedNavigationDialogIfUserClick(view, url) {
   try {
     const options = {
       type: "warning",
-      title: "Navigation blocked",
-      message: "This link is outside the allowed in-app pages.",
+      title: t("navigation_blocked_title"),
+      message: t("navigation_blocked_message"),
       detail: normalized,
-      buttons: ["OK", "Open in Browser"],
+      buttons: [t("ok"), t("open_in_browser")],
       defaultId: 0,
       cancelId: 0
     };
@@ -1006,6 +1653,7 @@ async function wasRecentUserLinkClick(view, url) {
 
 function loadAllowedUrl(view, url) {
   rememberAllowedUrl(view, url);
+  markRemoteThemePending(view);
   return view.webContents.loadURL(url);
 }
 
@@ -1166,12 +1814,29 @@ function restoreBlockedNavigation(view, blockedUrl) {
 
 function fallbackUrlForView(view) {
   if (view === coachView) {
-    return GOOGLE_URL;
+    return googleUrl();
   }
   if (view === dictionaryView) {
     return homeUrl(currentProvider(), currentDictionaryMode());
   }
   return "";
+}
+
+function reloadRemoteViewsForLocale() {
+  if (coachView && !coachView.webContents.isDestroyed()) {
+    loadAllowedUrl(coachView, googleUrl()).catch(() => undefined);
+  }
+  if (currentPreloadEagerness() === "prerender") {
+    prerenderUrlsByKey.clear();
+    syncDictionaryPrerenderMode();
+    return;
+  }
+  if (dictionaryView && !dictionaryView.webContents.isDestroyed()) {
+    loadAllowedUrl(
+      dictionaryView,
+      dictionaryUrl(currentProvider(), currentDictionaryMode(), store.snapshot().current_word)
+    ).catch(() => undefined);
+  }
 }
 
 function navigateDictionary(word) {
@@ -1222,6 +1887,14 @@ function parsePreloadEagerness(eagerness) {
     return id;
   }
   return "preconnect";
+}
+
+function parseDarkMode(mode) {
+  const id = String(mode || "").toLowerCase();
+  if (DARK_MODE_OPTIONS.some((item) => item.id === id)) {
+    return id;
+  }
+  return "system";
 }
 
 function dictionaryUrl(provider, mode, word) {
@@ -1587,16 +2260,34 @@ function viewKey(view) {
 }
 
 function loadPreloadUrl(windowOrView, url) {
-  return new Promise((resolve) => {
+  if (remoteContainerDestroyed(windowOrView)) {
+    return Promise.resolve();
+  }
+  const webContentsId = windowOrView.webContents.id;
+  const existing = preloadLoadsByWebContentsId.get(webContentsId);
+  existing?.cancel?.();
+  try {
+    if (!remoteContainerDestroyed(windowOrView) && windowOrView.webContents.isLoading()) {
+      windowOrView.webContents.stop();
+    }
+  } catch {
+    // The page can finish or be destroyed between checks.
+  }
+
+  const promise = new Promise((resolve) => {
     let settled = false;
+    let timer = null;
     const done = () => {
       if (settled) {
         return;
       }
       settled = true;
-      clearTimeout(timer);
+      if (timer) {
+        clearTimeout(timer);
+      }
       try {
         if (!remoteContainerDestroyed(windowOrView)) {
+          preloadLoadsByWebContentsId.delete(windowOrView.webContents.id);
           windowOrView.webContents.off("did-finish-load", done);
           windowOrView.webContents.off("did-fail-load", done);
           windowOrView.webContents.off("did-fail-provisional-load", done);
@@ -1606,12 +2297,16 @@ function loadPreloadUrl(windowOrView, url) {
       }
       resolve();
     };
-    const timer = setTimeout(done, 3500);
     try {
       if (remoteContainerDestroyed(windowOrView)) {
         done();
         return;
       }
+      timer = setTimeout(done, 3500);
+      preloadLoadsByWebContentsId.set(webContentsId, {
+        url,
+        cancel: done
+      });
       windowOrView.webContents.once("did-finish-load", done);
       windowOrView.webContents.once("did-fail-load", done);
       windowOrView.webContents.once("did-fail-provisional-load", done);
@@ -1620,6 +2315,7 @@ function loadPreloadUrl(windowOrView, url) {
       done();
     }
   });
+  return promise;
 }
 
 function remoteContainerDestroyed(windowOrView) {
@@ -1645,7 +2341,7 @@ function warmupOrigins() {
 
 function warmupPageUrls() {
   const word = store.snapshot().current_word;
-  const urls = [GOOGLE_URL];
+  const urls = [googleUrl()];
   const providerIds = PROVIDERS.map((provider) => provider.id);
   for (const provider of providerIds) {
     for (const mode of ["dictionary", "thesaurus"]) {

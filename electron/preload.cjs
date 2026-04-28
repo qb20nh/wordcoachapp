@@ -13,6 +13,9 @@ contextBridge.exposeInMainWorld("wordCoach", {
   setDictionaryMode: (mode) => ipcRenderer.invoke("wordcoach:set-dictionary-mode", mode),
   setPreloadEagerness: (eagerness) =>
     ipcRenderer.invoke("wordcoach:set-preload-eagerness", eagerness),
+  setDarkMode: (mode) => ipcRenderer.invoke("wordcoach:set-dark-mode", mode),
+  setCosmeticAdblock: (enabled) => ipcRenderer.invoke("wordcoach:set-cosmetic-adblock", enabled),
+  setLocaleChoice: (choice) => ipcRenderer.invoke("wordcoach:set-locale-choice", choice),
   setUiOverlayOpen: (open) => ipcRenderer.invoke("wordcoach:set-ui-overlay-open", open),
   openGoogleSignIn: () => ipcRenderer.invoke("wordcoach:open-google-sign-in"),
   reloadCoach: () => ipcRenderer.invoke("wordcoach:reload-coach"),

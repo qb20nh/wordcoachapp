@@ -45,36 +45,6 @@
     div[class*='knowledge_game'].word-coach-dragging {
       user-select: none !important;
     }
-    @media (prefers-color-scheme: dark) {
-      html,
-      body,
-      div[class*='knowledge_game'] {
-        color-scheme: dark !important;
-      }
-    }
-    html[data-wordcoach-color-scheme='dark'],
-    html[data-wordcoach-color-scheme='dark'] body,
-    html[data-wordcoach-color-scheme='dark'] div[class*='knowledge_game'] {
-      color-scheme: dark !important;
-    }
-    html[data-wordcoach-color-scheme='dark'] div[class*='knowledge_game'] {
-      background: #202124 !important;
-      color: #e8eaed !important;
-    }
-    html[data-wordcoach-color-scheme='dark'] div[class*='knowledge_game'] [data-wordcoach-neutral-bg='true'] {
-      background-color: #202124 !important;
-      border-color: #3c4043 !important;
-    }
-    html[data-wordcoach-color-scheme='dark'] div[class*='knowledge_game'] [data-wordcoach-neutral-bg='surface'] {
-      background-color: #303134 !important;
-      border-color: #3c4043 !important;
-    }
-    html[data-wordcoach-color-scheme='dark'] div[class*='knowledge_game'] [data-wordcoach-neutral-fg='true'] {
-      color: #e8eaed !important;
-    }
-    html[data-wordcoach-color-scheme='dark'] div[class*='knowledge_game'] [data-wordcoach-muted-fg='true'] {
-      color: #bdc1c6 !important;
-    }
   `;
 
   function cleanedUserCss() {
@@ -104,99 +74,6 @@
 
   function gameRoot() {
     return document.querySelector("div[class*='knowledge_game']");
-  }
-
-  function darkModeActive() {
-    return (
-      document.documentElement.dataset.wordcoachColorScheme === "dark" ||
-      Boolean(window.matchMedia?.("(prefers-color-scheme: dark)")?.matches)
-    );
-  }
-
-  function syncDarkTheme() {
-    const root = gameRoot();
-    if (!root) {
-      return;
-    }
-    if (!darkModeActive()) {
-      clearDarkMarks(root);
-      return;
-    }
-    for (const element of [root, ...root.querySelectorAll("*")]) {
-      markNeutralElement(element);
-    }
-  }
-
-  function clearDarkMarks(root) {
-    for (const element of root.querySelectorAll("[data-wordcoach-neutral-bg], [data-wordcoach-neutral-fg], [data-wordcoach-muted-fg]")) {
-      delete element.dataset.wordcoachNeutralBg;
-      delete element.dataset.wordcoachNeutralFg;
-      delete element.dataset.wordcoachMutedFg;
-    }
-  }
-
-  function markNeutralElement(element) {
-    if (resultStateElement(element)) {
-      delete element.dataset.wordcoachNeutralBg;
-      return;
-    }
-    const style = window.getComputedStyle(element);
-    const background = colorChannels(style.backgroundColor);
-    const foreground = colorChannels(style.color);
-    if (background && lightNeutral(background)) {
-      const value = element === gameRoot() ? "true" : "surface";
-      if (element.dataset.wordcoachNeutralBg !== value) {
-        element.dataset.wordcoachNeutralBg = value;
-      }
-    }
-    if (foreground && darkNeutral(foreground)) {
-      if (element.dataset.wordcoachNeutralFg !== "true") {
-        element.dataset.wordcoachNeutralFg = "true";
-      }
-    } else if (foreground && mutedNeutral(foreground)) {
-      if (element.dataset.wordcoachMutedFg !== "true") {
-        element.dataset.wordcoachMutedFg = "true";
-      }
-    }
-  }
-
-  function resultStateElement(element) {
-    const marker = [
-      element.getAttribute("aria-label") || "",
-      element.getAttribute("class") || "",
-      element.getAttribute("style") || ""
-    ]
-      .join(" ")
-      .toLowerCase();
-    return /(correct|incorrect|wrong|right|green|red|#188038|#d93025|rgb\(24,\s*128,\s*56\)|rgb\(217,\s*48,\s*37\))/.test(marker);
-  }
-
-  function colorChannels(value) {
-    const match = String(value || "").match(/rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?\)/i);
-    if (!match) {
-      return null;
-    }
-    const alpha = match[4] === undefined ? 1 : Number(match[4]);
-    if (!Number.isFinite(alpha) || alpha < 0.1) {
-      return null;
-    }
-    return [Number(match[1]), Number(match[2]), Number(match[3])];
-  }
-
-  function neutral(channels) {
-    return Math.max(...channels) - Math.min(...channels) <= 18;
-  }
-
-  function lightNeutral(channels) {
-    return neutral(channels) && channels.every((channel) => channel >= 225);
-  }
-
-  function darkNeutral(channels) {
-    return neutral(channels) && channels.every((channel) => channel <= 95);
-  }
-
-  function mutedNeutral(channels) {
-    return neutral(channels) && channels.every((channel) => channel > 95 && channel <= 170);
   }
 
   function visible(element) {
@@ -427,7 +304,6 @@
 
   function bind() {
     injectCss();
-    syncDarkTheme();
     bindDragPan();
     document.addEventListener(
       "click",
@@ -451,15 +327,13 @@
 
     const observer = new MutationObserver(() => {
       injectCss();
-      syncDarkTheme();
     });
     observer.observe(document.documentElement, {
       childList: true,
       subtree: true,
       attributes: true,
-      attributeFilter: ["class", "style", "aria-label", "data-wordcoach-color-scheme"]
+      attributeFilter: ["class", "style", "aria-label"]
     });
-    window.matchMedia?.("(prefers-color-scheme: dark)")?.addEventListener?.("change", syncDarkTheme);
   }
 
   function bindDragPan() {

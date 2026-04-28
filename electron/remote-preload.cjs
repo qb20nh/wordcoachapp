@@ -1,4 +1,8 @@
 (() => {
+  const { contextBridge, ipcRenderer } = require("electron");
+  contextBridge.exposeInMainWorld("__wordCoachDarkReaderFetch", async (url) =>
+    ipcRenderer.invoke("wordcoach:darkreader-fetch", String(url || ""), location.href)
+  );
   const autoDarkCss = `
     :root {
       color-scheme: light dark;
@@ -75,4 +79,5 @@
   if (!injectAutoDarkCss()) {
     document.addEventListener("readystatechange", () => injectAutoDarkCss(), { once: true });
   }
+
 })();

@@ -3,7 +3,10 @@ export {};
 type Provider = "dictionary" | "merriam" | "naver";
 type DictionaryMode = "dictionary" | "thesaurus";
 type PreloadEagerness = "off" | "dns" | "preconnect" | "pages" | "prerender";
+type DarkMode = "system" | "dark" | "off";
 type ColorScheme = "light" | "dark";
+type LocaleChoice = "system" | "en" | "ko";
+type ResolvedLocale = "en" | "ko";
 
 type DictionaryProviderOption = {
   id: Provider;
@@ -17,6 +20,16 @@ type DictionaryModeOption = {
 
 type PreloadEagernessOption = {
   id: PreloadEagerness;
+  label: string;
+};
+
+type DarkModeOption = {
+  id: DarkMode;
+  label: string;
+};
+
+type LocaleOption = {
+  id: LocaleChoice;
   label: string;
 };
 
@@ -48,6 +61,13 @@ type AppSnapshot = {
   dictionary_modes: DictionaryModeOption[];
   preload_eagerness: PreloadEagerness;
   preload_eagerness_options: PreloadEagernessOption[];
+  dark_mode: DarkMode;
+  dark_mode_options: DarkModeOption[];
+  cosmetic_adblock: boolean;
+  locale_choice: LocaleChoice;
+  resolved_locale: ResolvedLocale;
+  locale_options: LocaleOption[];
+  messages: Record<string, string>;
   current_word: string;
   proxy_addr: string;
   proxy_blocked_hosts: string[];
@@ -65,6 +85,9 @@ declare global {
       setDictionaryProvider: (provider: Provider) => Promise<void>;
       setDictionaryMode: (mode: DictionaryMode) => Promise<void>;
       setPreloadEagerness: (eagerness: PreloadEagerness) => Promise<void>;
+      setDarkMode: (mode: DarkMode) => Promise<void>;
+      setCosmeticAdblock: (enabled: boolean) => Promise<void>;
+      setLocaleChoice: (choice: LocaleChoice) => Promise<void>;
       setUiOverlayOpen: (open: boolean) => Promise<void>;
       openGoogleSignIn: () => Promise<void>;
       reloadCoach: () => Promise<void>;

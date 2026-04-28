@@ -13,7 +13,10 @@ import {
 type Provider = "dictionary" | "merriam" | "naver";
 type DictionaryMode = "dictionary" | "thesaurus";
 type PreloadEagerness = "off" | "dns" | "preconnect" | "pages" | "prerender";
+type DarkMode = "system" | "dark" | "off";
 type ColorScheme = "light" | "dark";
+type LocaleChoice = "system" | "en" | "ko";
+type ResolvedLocale = "en" | "ko";
 
 type DictionaryProviderOption = {
   id: Provider;
@@ -27,6 +30,16 @@ type DictionaryModeOption = {
 
 type PreloadEagernessOption = {
   id: PreloadEagerness;
+  label: string;
+};
+
+type DarkModeOption = {
+  id: DarkMode;
+  label: string;
+};
+
+type LocaleOption = {
+  id: LocaleChoice;
   label: string;
 };
 
@@ -63,6 +76,13 @@ type AppSnapshot = {
   dictionary_modes: DictionaryModeOption[];
   preload_eagerness: PreloadEagerness;
   preload_eagerness_options: PreloadEagernessOption[];
+  dark_mode: DarkMode;
+  dark_mode_options: DarkModeOption[];
+  cosmetic_adblock: boolean;
+  locale_choice: LocaleChoice;
+  resolved_locale: ResolvedLocale;
+  locale_options: LocaleOption[];
+  messages: Record<string, string>;
   current_word: string;
   proxy_addr: string;
   proxy_blocked_hosts: string[];
@@ -109,8 +129,20 @@ app.innerHTML = `
       </header>
       <div class="settings-body">
         <label class="settings-field">
-          <span>Preload</span>
+          <span id="languageLabel">Language</span>
+          <select id="localeSelect" aria-label="Language"></select>
+        </label>
+        <label class="settings-field">
+          <span id="preloadLabel">Preload</span>
           <select id="preloadSelect" aria-label="Preload eagerness"></select>
+        </label>
+        <label class="settings-field">
+          <span id="darkModeLabel">Dark mode</span>
+          <select id="darkModeSelect" aria-label="Dark mode"></select>
+        </label>
+        <label class="settings-field settings-check-field">
+          <span id="cosmeticAdblockLabel">Cosmetic ad blocking</span>
+          <input id="cosmeticAdblockToggle" type="checkbox" aria-label="Cosmetic ad blocking" />
         </label>
         <div class="settings-actions">
           <button id="exportData" type="button">Export</button>
@@ -142,7 +174,11 @@ const closeSettings = document.querySelector<HTMLButtonElement>("#closeSettings"
 const lookupInput = document.querySelector<HTMLInputElement>("#lookupInput")!;
 const providerSelect = document.querySelector<HTMLSelectElement>("#providerSelect")!;
 const modeSelect = document.querySelector<HTMLSelectElement>("#modeSelect")!;
+const localeSelect = document.querySelector<HTMLSelectElement>("#localeSelect")!;
 const preloadSelect = document.querySelector<HTMLSelectElement>("#preloadSelect")!;
+const darkModeSelect = document.querySelector<HTMLSelectElement>("#darkModeSelect")!;
+const cosmeticAdblockToggle =
+  document.querySelector<HTMLInputElement>("#cosmeticAdblockToggle")!;
 const reloadCoach = document.querySelector<HTMLButtonElement>("#reloadCoach")!;
 const dictionaryBack = document.querySelector<HTMLButtonElement>("#dictionaryBack")!;
 const dictionaryForward = document.querySelector<HTMLButtonElement>("#dictionaryForward")!;
@@ -159,8 +195,121 @@ let lastHistorySignature = "";
 let lastProviderSignature = "";
 let lastModeSignature = "";
 let lastPreloadSignature = "";
+let lastDarkModeSignature = "";
+let lastLocaleSignature = "";
 let lastCurrentWord = "";
 let activePreloadEagerness: PreloadEagerness = "preconnect";
+let activeResolvedLocale: ResolvedLocale = "en";
+
+const fallbackMessages: Record<string, string> = {
+  app_title: "Word Coach",
+  settings: "Settings",
+  close_settings: "Close settings",
+  dictionary_provider: "Dictionary provider",
+  dictionary_mode: "Dictionary mode",
+  search_meaning: "Search meaning",
+  look_up: "Look up",
+  page_controls: "Page controls",
+  google_word_coach_controls: "Google Word Coach controls",
+  reload_word_coach: "Reload Word Coach",
+  google_sign_in: "Google sign in",
+  dictionary_controls: "Dictionary controls",
+  dictionary_back: "Dictionary back",
+  dictionary_forward: "Dictionary forward",
+  refresh_dictionary: "Refresh dictionary",
+  word_log: "Word log",
+  language: "Language",
+  preload: "Preload",
+  preload_eagerness: "Preload eagerness",
+  dark_mode: "Dark mode",
+  dark_mode_system: "System",
+  dark_mode_dark: "Dark",
+  dark_mode_off: "Off",
+  cosmetic_adblock: "Cosmetic ad blocking",
+  export: "Export",
+  import: "Import",
+  update_filters: "Update filters",
+  filters_not_loaded: "Filters not loaded",
+  updating_filters: "Updating filters",
+  filter_error: "Filter error: {error}",
+  filters_updated_at: "Updated {time} ({count} lists)",
+  filters_loaded: "{count} lists loaded",
+  filters_not_loaded_count: "{count} lists not loaded",
+  searching_word: "Searching {word}",
+  dictionary_changed: "Dictionary changed",
+  dictionary_mode_changed: "Dictionary mode changed",
+  language_changed: "Language changed",
+  preload_changed: "Preload changed",
+  dark_mode_changed: "Dark mode changed",
+  cosmetic_adblock_changed: "Cosmetic ad blocking changed",
+  word_coach_reloaded: "Word Coach reloaded",
+  dictionary_reloaded: "Dictionary reloaded",
+  opening_google_sign_in: "Opening Google sign in",
+  filter_update_failed: "Filter update failed",
+  filters_updated: "Filters updated",
+  exported_path: "Exported {path}",
+  export_cancelled: "Export cancelled",
+  import_cancelled: "Import cancelled",
+  imported_records: "Imported {count} new records",
+  prerender_confirm:
+    "Prerender keeps all six dictionary pages loaded in the background. This can use much more RAM, CPU, and network. Enable it?"
+};
+let activeMessages: Record<string, string> = fallbackMessages;
+
+function message(key: string, values: Record<string, string | number> = {}) {
+  const template = activeMessages[key] || fallbackMessages[key] || key;
+  return template.replace(/\{(\w+)\}/g, (_match, name: string) =>
+    Object.hasOwn(values, name) ? String(values[name]) : `{${name}}`
+  );
+}
+
+function setText(id: string, key: string) {
+  const element = document.querySelector<HTMLElement>(`#${id}`);
+  if (element) {
+    element.textContent = message(key);
+  }
+}
+
+function setLabel(element: HTMLElement, key: string) {
+  const text = message(key);
+  element.setAttribute("aria-label", text);
+  element.setAttribute("title", text);
+}
+
+function applyStaticTranslations() {
+  document.documentElement.lang = activeResolvedLocale;
+  document.title = message("app_title");
+  setLabel(settingsButton, "settings");
+  providerSelect.setAttribute("aria-label", message("dictionary_provider"));
+  modeSelect.setAttribute("aria-label", message("dictionary_mode"));
+  lookupInput.placeholder = message("search_meaning");
+  setLabel(lookupForm.querySelector<HTMLButtonElement>("button[type='submit']")!, "look_up");
+  document.querySelector(".split-toolbar")?.setAttribute("aria-label", message("page_controls"));
+  document.querySelector(".toolbar-left")?.setAttribute(
+    "aria-label",
+    message("google_word_coach_controls")
+  );
+  setLabel(reloadCoach, "reload_word_coach");
+  setLabel(googleSignIn, "google_sign_in");
+  document.querySelector(".toolbar-right")?.setAttribute("aria-label", message("dictionary_controls"));
+  setLabel(dictionaryBack, "dictionary_back");
+  setLabel(dictionaryForward, "dictionary_forward");
+  setLabel(dictionaryRefresh, "refresh_dictionary");
+  document.querySelector(".word-log-panel")?.setAttribute("aria-label", message("word_log"));
+  setText("settingsTitle", "settings");
+  setLabel(closeSettings, "close_settings");
+  setText("languageLabel", "language");
+  localeSelect.setAttribute("aria-label", message("language"));
+  setText("preloadLabel", "preload");
+  preloadSelect.setAttribute("aria-label", message("preload_eagerness"));
+  setText("darkModeLabel", "dark_mode");
+  darkModeSelect.setAttribute("aria-label", message("dark_mode"));
+  setText("cosmeticAdblockLabel", "cosmetic_adblock");
+  cosmeticAdblockToggle.setAttribute("aria-label", message("cosmetic_adblock"));
+  exportData.textContent = message("export");
+  importData.textContent = message("import");
+  updateFilters.textContent = message("update_filters");
+}
 
 function showToast(message: string) {
   toast.textContent = message;
@@ -169,7 +318,7 @@ function showToast(message: string) {
 }
 
 function formatTime(epochMs: number) {
-  return new Intl.DateTimeFormat(undefined, {
+  return new Intl.DateTimeFormat(activeResolvedLocale === "ko" ? "ko-KR" : "en-US", {
     month: "short",
     day: "2-digit",
     hour: "2-digit",
@@ -179,18 +328,21 @@ function formatTime(epochMs: number) {
 
 function formatAdblockStatus(status: AdblockStatus) {
   if (status.updating) {
-    return "Updating filters";
+    return message("updating_filters");
   }
   if (status.error) {
-    return `Filter error: ${status.error}`;
+    return message("filter_error", { error: status.error });
   }
   if (status.ready && status.updated_at) {
-    return `Updated ${formatTime(status.updated_at)} (${status.list_count} lists)`;
+    return message("filters_updated_at", {
+      time: formatTime(status.updated_at),
+      count: status.list_count
+    });
   }
   if (status.ready) {
-    return `${status.list_count} lists loaded`;
+    return message("filters_loaded", { count: status.list_count });
   }
-  return `${status.list_count} lists not loaded`;
+  return message("filters_not_loaded_count", { count: status.list_count });
 }
 
 function wordFromRecord(record: HistoryRecord) {
@@ -328,6 +480,28 @@ function renderPreloadOptions(options: PreloadEagernessOption[]) {
     .join("");
 }
 
+function renderDarkModeOptions(options: DarkModeOption[]) {
+  const signature = options.map((option) => `${option.id}:${option.label}`).join("|");
+  if (signature === lastDarkModeSignature) {
+    return;
+  }
+  lastDarkModeSignature = signature;
+  darkModeSelect.innerHTML = options
+    .map((option) => `<option value="${escapeHtml(option.id)}">${escapeHtml(option.label)}</option>`)
+    .join("");
+}
+
+function renderLocaleOptions(options: LocaleOption[]) {
+  const signature = options.map((option) => `${option.id}:${option.label}`).join("|");
+  if (signature === lastLocaleSignature) {
+    return;
+  }
+  lastLocaleSignature = signature;
+  localeSelect.innerHTML = options
+    .map((option) => `<option value="${escapeHtml(option.id)}">${escapeHtml(option.label)}</option>`)
+    .join("");
+}
+
 function escapeHtml(value: string) {
   return value.replace(/[&<>"']/g, (char) => {
     switch (char) {
@@ -351,13 +525,21 @@ function applyColorScheme(scheme: ColorScheme) {
 }
 
 function applySnapshot(snapshot: AppSnapshot) {
+  activeResolvedLocale = snapshot.resolved_locale;
+  activeMessages = { ...fallbackMessages, ...(snapshot.messages || {}) };
+  applyStaticTranslations();
   applyColorScheme(snapshot.color_scheme);
   renderProviderOptions(snapshot.dictionary_providers);
   renderModeOptions(snapshot.dictionary_modes);
   renderPreloadOptions(snapshot.preload_eagerness_options);
+  renderDarkModeOptions(snapshot.dark_mode_options);
+  renderLocaleOptions(snapshot.locale_options);
   providerSelect.value = snapshot.provider;
   modeSelect.value = snapshot.dictionary_mode;
   preloadSelect.value = snapshot.preload_eagerness;
+  darkModeSelect.value = snapshot.dark_mode;
+  cosmeticAdblockToggle.checked = snapshot.cosmetic_adblock;
+  localeSelect.value = snapshot.locale_choice;
   activePreloadEagerness = snapshot.preload_eagerness;
   if (snapshot.current_word !== lastCurrentWord || (!lookupInput.value && snapshot.current_word)) {
     lookupInput.value = snapshot.current_word;
@@ -385,7 +567,7 @@ lookupForm.addEventListener("submit", async (event) => {
     return;
   }
   await window.wordCoach.searchDictionary(word);
-  showToast(`Searching ${word}`);
+  showToast(message("searching_word", { word }));
 });
 
 settingsButton.addEventListener("click", () => {
@@ -410,14 +592,20 @@ window.addEventListener("keydown", (event) => {
 
 providerSelect.addEventListener("change", async () => {
   await window.wordCoach.setDictionaryProvider(providerSelect.value as Provider);
-  showToast("Dictionary changed");
+  showToast(message("dictionary_changed"));
   await refreshSnapshot();
 });
 
 modeSelect.addEventListener("change", async () => {
   await window.wordCoach.setDictionaryMode(modeSelect.value as DictionaryMode);
-  showToast("Dictionary mode changed");
+  showToast(message("dictionary_mode_changed"));
   await refreshSnapshot();
+});
+
+localeSelect.addEventListener("change", async () => {
+  await window.wordCoach.setLocaleChoice(localeSelect.value as LocaleChoice);
+  await refreshSnapshot();
+  showToast(message("language_changed"));
 });
 
 preloadSelect.addEventListener("change", async () => {
@@ -425,21 +613,31 @@ preloadSelect.addEventListener("change", async () => {
   if (
     nextEagerness === "prerender" &&
     activePreloadEagerness !== "prerender" &&
-    !window.confirm(
-      "Prerender keeps all six dictionary pages loaded in the background. This can use much more RAM, CPU, and network. Enable it?"
-    )
+    !window.confirm(message("prerender_confirm"))
   ) {
     preloadSelect.value = activePreloadEagerness;
     return;
   }
   await window.wordCoach.setPreloadEagerness(nextEagerness);
-  showToast("Preload changed");
+  showToast(message("preload_changed"));
+  await refreshSnapshot();
+});
+
+darkModeSelect.addEventListener("change", async () => {
+  await window.wordCoach.setDarkMode(darkModeSelect.value as DarkMode);
+  showToast(message("dark_mode_changed"));
+  await refreshSnapshot();
+});
+
+cosmeticAdblockToggle.addEventListener("change", async () => {
+  await window.wordCoach.setCosmeticAdblock(cosmeticAdblockToggle.checked);
+  showToast(message("cosmetic_adblock_changed"));
   await refreshSnapshot();
 });
 
 reloadCoach.addEventListener("click", async () => {
   await window.wordCoach.reloadCoach();
-  showToast("Word Coach reloaded");
+  showToast(message("word_coach_reloaded"));
 });
 
 dictionaryBack.addEventListener("click", async () => {
@@ -452,21 +650,21 @@ dictionaryForward.addEventListener("click", async () => {
 
 dictionaryRefresh.addEventListener("click", async () => {
   await window.wordCoach.reloadDictionary();
-  showToast("Dictionary reloaded");
+  showToast(message("dictionary_reloaded"));
 });
 
 googleSignIn.addEventListener("click", async () => {
   await window.wordCoach.openGoogleSignIn();
-  showToast("Opening Google sign in");
+  showToast(message("opening_google_sign_in"));
 });
 
 updateFilters.addEventListener("click", async () => {
   updateFilters.disabled = true;
-  filterStatus.textContent = "Updating filters";
+  filterStatus.textContent = message("updating_filters");
   try {
     const status = await window.wordCoach.updateAdblockFilters();
     filterStatus.textContent = formatAdblockStatus(status);
-    showToast(status.error ? "Filter update failed" : "Filters updated");
+    showToast(status.error ? message("filter_update_failed") : message("filters_updated"));
   } catch (error) {
     showToast(String(error));
   } finally {
@@ -476,12 +674,16 @@ updateFilters.addEventListener("click", async () => {
 
 exportData.addEventListener("click", async () => {
   const path = await window.wordCoach.exportHistory();
-  showToast(path ? `Exported ${path}` : "Export cancelled");
+  showToast(path ? message("exported_path", { path }) : message("export_cancelled"));
 });
 
 importData.addEventListener("click", async () => {
   const imported = await window.wordCoach.importHistory();
-  showToast(imported === null ? "Import cancelled" : `Imported ${imported} new records`);
+  showToast(
+    imported === null
+      ? message("import_cancelled")
+      : message("imported_records", { count: imported })
+  );
   await refreshSnapshot();
 });
 

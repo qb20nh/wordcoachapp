@@ -248,7 +248,7 @@ button:disabled {
 
 .settings-field {
   display: grid;
-  grid-template-columns: 72px minmax(0, 1fr);
+  grid-template-columns: 132px minmax(0, 1fr);
   align-items: center;
   gap: 10px;
   font-size: 13px;
@@ -262,6 +262,13 @@ button:disabled {
   background: #ffffff;
   color: #1f2933;
   padding: 0 8px;
+}
+
+.settings-check-field input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: #2563eb;
 }
 
 .settings-actions {
@@ -306,43 +313,43 @@ button:disabled {
 }
 
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-wordcoach-color-scheme]) {
     color: #e8eaed;
     background: #101317;
   }
 
-  body {
+  :root:not([data-wordcoach-color-scheme]) body {
     background: #101317;
   }
 
-  button,
-  .settings-field select,
-  .lookup input,
-  .lookup select {
+  :root:not([data-wordcoach-color-scheme]) button,
+  :root:not([data-wordcoach-color-scheme]) .settings-field select,
+  :root:not([data-wordcoach-color-scheme]) .lookup input,
+  :root:not([data-wordcoach-color-scheme]) .lookup select {
     border-color: #4c5663;
     background: #191f26;
     color: #e8eaed;
   }
 
-  button:hover {
+  :root:not([data-wordcoach-color-scheme]) button:hover {
     background: #232b34;
   }
 
-  .topbar {
+  :root:not([data-wordcoach-color-scheme]) .topbar {
     border-bottom-color: #313943;
     background: #151a20;
   }
 
-  .word-log-panel {
+  :root:not([data-wordcoach-color-scheme]) .word-log-panel {
     border-color: #313943;
     background: #101317;
   }
 
-  .history-session {
+  :root:not([data-wordcoach-color-scheme]) .history-session {
     border-bottom-color: #2a323b;
   }
 
-  .history-word {
+  :root:not([data-wordcoach-color-scheme]) .history-word {
     --history-word-bg: #191f26;
     --history-word-border: #313943;
     --history-word-color: #a7b0ba;
@@ -350,7 +357,7 @@ button:disabled {
     --history-word-hover-border: #6b839b;
   }
 
-  .history-word.is-correct {
+  :root:not([data-wordcoach-color-scheme]) .history-word.is-correct {
     --history-word-bg: #12351f;
     --history-word-border: #2f8a46;
     --history-word-color: #bcecc7;
@@ -358,7 +365,7 @@ button:disabled {
     --history-word-hover-border: #49a960;
   }
 
-  .history-word.is-incorrect {
+  :root:not([data-wordcoach-color-scheme]) .history-word.is-incorrect {
     --history-word-bg: #3b1918;
     --history-word-border: #8e403b;
     --history-word-color: #ffc9c4;
@@ -366,30 +373,30 @@ button:disabled {
     --history-word-hover-border: #b65a53;
   }
 
-  .history-word:hover {
+  :root:not([data-wordcoach-color-scheme]) .history-word:hover {
     border-color: var(--history-word-hover-border);
     background: var(--history-word-hover-bg);
   }
 
-  .settings-overlay {
+  :root:not([data-wordcoach-color-scheme]) .settings-overlay {
     background: rgba(0, 0, 0, 0.42);
   }
 
-  .settings-panel {
+  :root:not([data-wordcoach-color-scheme]) .settings-panel {
     border-color: #313943;
     background: #151a20;
     color: #e8eaed;
   }
 
-  .settings-header {
+  :root:not([data-wordcoach-color-scheme]) .settings-header {
     border-bottom-color: #313943;
   }
 
-  .settings-status {
+  :root:not([data-wordcoach-color-scheme]) .settings-status {
     color: #a7b0ba;
   }
 
-  .toast {
+  :root:not([data-wordcoach-color-scheme]) .toast {
     background: #d9dee5;
     color: #111418;
   }

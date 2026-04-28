@@ -2,10 +2,15 @@ import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 
+import { DEFAULT_LOCALE_CHOICE, normalizeLocaleChoice } from "./i18n.mjs";
+
 const DEFAULT_SETTINGS = {
   dictionary_provider: "dictionary",
   dictionary_mode: "dictionary",
   preload_eagerness: "preconnect",
+  dark_mode: "system",
+  cosmetic_adblock: true,
+  locale_choice: DEFAULT_LOCALE_CHOICE,
   current_word: ""
 };
 
@@ -29,6 +34,9 @@ export class JsonStore {
     this.settings.preload_eagerness = normalizePreloadEagerness(
       this.settings.preload_eagerness
     );
+    this.settings.dark_mode = normalizeDarkMode(this.settings.dark_mode);
+    this.settings.cosmetic_adblock = normalizeBoolean(this.settings.cosmetic_adblock, true);
+    this.settings.locale_choice = normalizeLocaleChoice(this.settings.locale_choice);
     const history = await readJson(this.historyPath, []);
     this.history = Array.isArray(history)
       ? history.map(normalizeCapture).filter(Boolean).sort(byCapturedAtDesc)
@@ -40,6 +48,9 @@ export class JsonStore {
       provider: this.settings.dictionary_provider,
       dictionary_mode: this.settings.dictionary_mode,
       preload_eagerness: this.settings.preload_eagerness,
+      dark_mode: this.settings.dark_mode,
+      cosmetic_adblock: this.settings.cosmetic_adblock,
+      locale_choice: this.settings.locale_choice,
       current_word: this.settings.current_word,
       history: this.history.slice(0, limit)
     };
@@ -57,6 +68,21 @@ export class JsonStore {
 
   async setPreloadEagerness(eagerness) {
     this.settings.preload_eagerness = normalizePreloadEagerness(eagerness);
+    await writeJson(this.settingsPath, this.settings);
+  }
+
+  async setDarkMode(mode) {
+    this.settings.dark_mode = normalizeDarkMode(mode);
+    await writeJson(this.settingsPath, this.settings);
+  }
+
+  async setCosmeticAdblock(enabled) {
+    this.settings.cosmetic_adblock = normalizeBoolean(enabled, true);
+    await writeJson(this.settingsPath, this.settings);
+  }
+
+  async setLocaleChoice(choice) {
+    this.settings.locale_choice = normalizeLocaleChoice(choice);
     await writeJson(this.settingsPath, this.settings);
   }
 
@@ -237,6 +263,21 @@ function normalizePreloadEagerness(eagerness) {
     return id;
   }
   return DEFAULT_SETTINGS.preload_eagerness;
+}
+
+function normalizeDarkMode(mode) {
+  const id = String(mode || "").toLowerCase();
+  if (["system", "dark", "off"].includes(id)) {
+    return id;
+  }
+  return DEFAULT_SETTINGS.dark_mode;
+}
+
+function normalizeBoolean(value, fallback) {
+  if (typeof value === "boolean") {
+    return value;
+  }
+  return fallback;
 }
 
 function stableId(capturedAt, question, selectedAnswer, correctAnswer) {
