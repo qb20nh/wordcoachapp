@@ -42,8 +42,8 @@ const DICTIONARY_MODES = [
 const PRELOAD_EAGERNESS_OPTIONS = [
   { id: "off", label: "Off" },
   { id: "dns", label: "DNS" },
-  { id: "preconnect", label: "Preconnect" },
-  { id: "pages", label: "Pages" },
+  { id: "preconnect", label: "TLS/TCP" },
+  { id: "pages", label: "HTTP" },
   { id: "prerender", label: "Prerender" }
 ];
 const PRELOAD_EAGERNESS_RANK = {
@@ -100,9 +100,10 @@ let systemColorSchemeCache = { value: "light", expiresAt: 0 };
 let uiOverlayOpen = false;
 const remoteViewsByWebContentsId = new Map();
 const lastAllowedUrlByWebContentsId = new Map();
-const prerenderWindows = new Map();
+const prerenderDictionaryViews = new Map();
 const prerenderUrlsByKey = new Map();
 const pendingBlockedDialogs = new Set();
+const cosmeticCssKeysByWebContentsId = new Map();
 
 app.commandLine.appendSwitch("disable-quic");
 app.commandLine.appendSwitch("force-webrtc-ip-handling-policy", "disable_non_proxied_udp");
@@ -124,7 +125,7 @@ app.on("before-quit", () => {
     themeSyncTimer = null;
   }
   destroyPagePreloadWindow();
-  destroyPrerenderWindows();
+  destroyAllPrerenderDictionaryViews();
   proxy?.close().catch(() => undefined);
 });
 
@@ -230,13 +231,19 @@ async function configureRemoteSession(remoteSession) {
 
 function createRemoteViews(remoteSession) {
   coachView = createView(remoteSession, true);
-  dictionaryView = createView(remoteSession, false);
-
   mainWindow.contentView.addChildView(coachView);
-  mainWindow.contentView.addChildView(dictionaryView);
 
   loadAllowedUrl(coachView, GOOGLE_URL);
-  loadAllowedUrl(dictionaryView, homeUrl(currentProvider(), currentDictionaryMode()));
+  if (currentPreloadEagerness() === "prerender") {
+    activatePrerenderedDictionaryView(
+      dictionaryKey(currentProvider(), currentDictionaryMode()),
+      dictionaryUrl(currentProvider(), currentDictionaryMode(), store.snapshot().current_word)
+    );
+  } else {
+    dictionaryView = createView(remoteSession, false);
+    mainWindow.contentView.addChildView(dictionaryView);
+    loadAllowedUrl(dictionaryView, homeUrl(currentProvider(), currentDictionaryMode()));
+  }
 }
 
 function createView(remoteSession, includeExtractor) {
@@ -256,6 +263,7 @@ function createView(remoteSession, includeExtractor) {
   view.webContents.on("destroyed", () => {
     remoteViewsByWebContentsId.delete(webContentsId);
     lastAllowedUrlByWebContentsId.delete(webContentsId);
+    cosmeticCssKeysByWebContentsId.delete(webContentsId);
   });
   view.webContents.setWindowOpenHandler(({ url }) => {
     if (urlAllowed(url)) {
@@ -327,6 +335,7 @@ function layoutRemoteViews() {
   if (uiOverlayOpen) {
     coachView.setBounds({ x: 0, y: TOPBAR_HEIGHT, width: leftWidth, height: 0 });
     dictionaryView.setBounds({ x: leftWidth, y: TOPBAR_HEIGHT, width: rightWidth, height: 0 });
+    layoutInactivePrerenderDictionaryViews(leftWidth, rightWidth, remoteHeight);
     return;
   }
   const coachHeight = Math.floor(remoteHeight / 2);
@@ -337,6 +346,20 @@ function layoutRemoteViews() {
     width: rightWidth,
     height: remoteHeight
   });
+  layoutInactivePrerenderDictionaryViews(leftWidth, rightWidth, remoteHeight);
+}
+
+function layoutInactivePrerenderDictionaryViews(leftWidth, rightWidth, remoteHeight) {
+  for (const view of prerenderDictionaryViews.values()) {
+    if (view !== dictionaryView && !view.webContents.isDestroyed()) {
+      view.setBounds({
+        x: leftWidth + rightWidth + 1,
+        y: TOPBAR_HEIGHT,
+        width: rightWidth,
+        height: remoteHeight
+      });
+    }
+  }
 }
 
 function injectRemoteScripts(view, includeExtractor) {
@@ -407,6 +430,7 @@ function registerIpc() {
   ipcMain.handle("wordcoach:set-preload-eagerness", async (_event, eagerness) => {
     const nextEagerness = parsePreloadEagerness(eagerness);
     await store.setPreloadEagerness(nextEagerness);
+    syncDictionaryPrerenderMode();
     scheduleNetworkWarmup();
   });
   ipcMain.handle("wordcoach:set-ui-overlay-open", (_event, open) => {
@@ -654,11 +678,6 @@ function applyColorSchemeToRemoteWebContents() {
   if (pagePreloadWindow && !pagePreloadWindow.isDestroyed()) {
     applyColorSchemeToWebContents(pagePreloadWindow.webContents);
   }
-  for (const window of prerenderWindows.values()) {
-    if (!window.isDestroyed()) {
-      applyColorSchemeToWebContents(window.webContents);
-    }
-  }
 }
 
 function applyColorSchemeToView(view) {
@@ -701,7 +720,7 @@ async function applyCosmeticAdblockToView(view) {
   }
   let css = "";
   try {
-    css = adblocker.cosmeticCss(features);
+    css = normalizeCosmeticCss(adblocker.cosmeticCss(features));
   } catch {
     return;
   }
@@ -733,9 +752,11 @@ function collectAdblockFeatures(webContents) {
         cap(classes, className, 8000);
       }
     }
-    for (const element of document.querySelectorAll("a[href], area[href]")) {
+    for (const element of document.querySelectorAll("[href], [src]")) {
       cap(hrefs, element.getAttribute("href"), 4000);
+      cap(hrefs, element.getAttribute("src"), 4000);
       cap(hrefs, element.href, 4000);
+      cap(hrefs, element.src, 4000);
     }
     return {
       url: location.href,
@@ -747,28 +768,174 @@ function collectAdblockFeatures(webContents) {
   return webContents.executeJavaScript(script, true).catch(() => null);
 }
 
-function injectCosmeticAdblockCss(webContents, css) {
+async function injectCosmeticAdblockCss(webContents, css) {
+  if (!webContents || webContents.isDestroyed()) {
+    return;
+  }
+  const webContentsId = webContents.id;
+  const previousKey = cosmeticCssKeysByWebContentsId.get(webContentsId);
+  if (previousKey) {
+    cosmeticCssKeysByWebContentsId.delete(webContentsId);
+    await webContents.removeInsertedCSS(previousKey).catch(() => undefined);
+  }
+  if (css) {
+    const key = await webContents.insertCSS(css, { cssOrigin: "user" }).catch(() => "");
+    if (key && !webContents.isDestroyed()) {
+      cosmeticCssKeysByWebContentsId.set(webContentsId, key);
+    }
+  }
+  await injectCosmeticAdblockStyleFallback(webContents, css);
+}
+
+function injectCosmeticAdblockStyleFallback(webContents, css) {
   if (!webContents || webContents.isDestroyed()) {
     return Promise.resolve();
   }
   const script = `(() => {
     const id = "wordcoach-cosmetic-adblock-style";
-    let style = document.getElementById(id);
     const css = ${JSON.stringify(css || "")};
+    window.__WORDCOACH_COSMETIC_ADBLOCK_CSS = css;
+    const ensureStyle = () => {
+      let style = document.getElementById(id);
+      if (!window.__WORDCOACH_COSMETIC_ADBLOCK_CSS) {
+        style?.remove();
+        return;
+      }
+      if (!style) {
+        style = document.createElement("style");
+        style.id = id;
+        (document.head || document.documentElement).appendChild(style);
+      }
+      if (style.textContent !== window.__WORDCOACH_COSMETIC_ADBLOCK_CSS) {
+        style.textContent = window.__WORDCOACH_COSMETIC_ADBLOCK_CSS;
+      }
+    };
     if (!css) {
-      style?.remove();
+      ensureStyle();
       return;
     }
-    if (!style) {
-      style = document.createElement("style");
-      style.id = id;
-      document.documentElement.appendChild(style);
-    }
-    if (style.textContent !== css) {
-      style.textContent = css;
+    ensureStyle();
+    if (!window.__WORDCOACH_COSMETIC_ADBLOCK_OBSERVER) {
+      window.__WORDCOACH_COSMETIC_ADBLOCK_OBSERVER = new MutationObserver(() => ensureStyle());
+      window.__WORDCOACH_COSMETIC_ADBLOCK_OBSERVER.observe(document.documentElement, {
+        childList: true,
+        subtree: true
+      });
     }
   })();`;
   return webContents.executeJavaScript(script, true);
+}
+
+function normalizeCosmeticCss(css) {
+  const normalizedRules = [];
+  for (const rule of splitCssRules(css)) {
+    for (const selector of splitSelectorList(rule.selector)) {
+      if (selector) {
+        normalizedRules.push(`${selector} { ${rule.body} }`);
+      }
+    }
+  }
+  return normalizedRules.join("\n");
+}
+
+function splitCssRules(css) {
+  const rules = [];
+  const text = String(css || "");
+  let selectorStart = 0;
+  let bodyStart = -1;
+  let quote = "";
+  let escapeNext = false;
+
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+    if (escapeNext) {
+      escapeNext = false;
+      continue;
+    }
+    if (char === "\\") {
+      escapeNext = true;
+      continue;
+    }
+    if (quote) {
+      if (char === quote) {
+        quote = "";
+      }
+      continue;
+    }
+    if (char === "\"" || char === "'") {
+      quote = char;
+      continue;
+    }
+    if (char === "{" && bodyStart === -1) {
+      bodyStart = index + 1;
+      continue;
+    }
+    if (char === "}" && bodyStart !== -1) {
+      const selector = text.slice(selectorStart, bodyStart - 1).trim();
+      const body = text.slice(bodyStart, index).trim();
+      if (selector && body) {
+        rules.push({ selector, body });
+      }
+      selectorStart = index + 1;
+      bodyStart = -1;
+    }
+  }
+
+  return rules;
+}
+
+function splitSelectorList(selectorText) {
+  const selectors = [];
+  const text = String(selectorText || "");
+  let start = 0;
+  let quote = "";
+  let bracketDepth = 0;
+  let parenDepth = 0;
+  let escapeNext = false;
+
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+    if (escapeNext) {
+      escapeNext = false;
+      continue;
+    }
+    if (char === "\\") {
+      escapeNext = true;
+      continue;
+    }
+    if (quote) {
+      if (char === quote) {
+        quote = "";
+      }
+      continue;
+    }
+    if (char === "\"" || char === "'") {
+      quote = char;
+      continue;
+    }
+    if (char === "[") {
+      bracketDepth += 1;
+      continue;
+    }
+    if (char === "]" && bracketDepth > 0) {
+      bracketDepth -= 1;
+      continue;
+    }
+    if (char === "(") {
+      parenDepth += 1;
+      continue;
+    }
+    if (char === ")" && parenDepth > 0) {
+      parenDepth -= 1;
+      continue;
+    }
+    if (char === "," && bracketDepth === 0 && parenDepth === 0) {
+      selectors.push(text.slice(start, index).trim());
+      start = index + 1;
+    }
+  }
+  selectors.push(text.slice(start).trim());
+  return selectors.filter(Boolean);
 }
 
 function sendSnapshot() {
@@ -861,6 +1028,8 @@ function syncDictionaryStateFromUrl(view, url) {
       pendingDictionaryNavigation = null;
     } else if (dictionaryStatesMatch(state, pendingDictionaryNavigation.state)) {
       pendingDictionaryNavigation = null;
+    } else if (state.needs_page_word && state.provider === pendingDictionaryNavigation.state?.provider) {
+      pendingDictionaryNavigation = null;
     } else {
       return;
     }
@@ -868,6 +1037,9 @@ function syncDictionaryStateFromUrl(view, url) {
   dictionarySyncQueue = dictionarySyncQueue
     .then(() => syncDictionaryState(state))
     .catch(() => undefined);
+  if (state.needs_page_word) {
+    scheduleDictionaryPageWordSync(view, url);
+  }
 }
 
 async function syncDictionaryState(state) {
@@ -881,7 +1053,7 @@ async function syncDictionaryState(state) {
     await store.setDictionaryMode(state.mode);
     changed = true;
   }
-  if (state.word !== snapshot.current_word) {
+  if (typeof state.word === "string" && state.word !== snapshot.current_word) {
     await store.setCurrentWord(state.word);
     changed = true;
   }
@@ -889,6 +1061,78 @@ async function syncDictionaryState(state) {
     sendSnapshot();
     scheduleNetworkWarmup();
   }
+}
+
+function scheduleDictionaryPageWordSync(view, url) {
+  for (const delay of [150, 600, 1500, 3000]) {
+    setTimeout(() => syncDictionaryStateFromPage(view, url), delay);
+  }
+}
+
+async function syncDictionaryStateFromPage(view, expectedUrl) {
+  if (!view || view !== dictionaryView || view.webContents.isDestroyed()) {
+    return;
+  }
+  const currentUrl = view.webContents.getURL();
+  if (!urlsEqual(currentUrl, expectedUrl)) {
+    return;
+  }
+  const state = dictionaryStateFromUrl(currentUrl);
+  if (!state?.needs_page_word) {
+    return;
+  }
+  const word = await extractNaverDictionaryWord(view.webContents);
+  if (!word) {
+    return;
+  }
+  dictionarySyncQueue = dictionarySyncQueue
+    .then(() => syncDictionaryState({ ...state, word, needs_page_word: false }))
+    .catch(() => undefined);
+}
+
+async function extractNaverDictionaryWord(webContents) {
+  if (!webContents || webContents.isDestroyed()) {
+    return "";
+  }
+  const script = `(() => {
+    const clean = (value) => {
+      const text = String(value || "")
+        .replace(/\\u00b7/g, "")
+        .replace(/\\s+/g, " ")
+        .trim()
+        .replace(/\\s*\\d+$/, "")
+        .trim();
+      const match = text.match(/[A-Za-z][A-Za-z' -]{0,80}/);
+      return match ? match[0].replace(/\\s+/g, " ").trim() : "";
+    };
+    const textFrom = (selector) => {
+      const element = document.querySelector(selector);
+      if (!element) {
+        return "";
+      }
+      const clone = element.cloneNode(true);
+      clone.querySelectorAll("sup, .num, .blind").forEach((node) => node.remove());
+      return clean(clone.textContent);
+    };
+    for (const selector of [
+      ".section_entry .entry_title strong.word",
+      ".component_entry .entry_title strong.word",
+      ".entry_title .word",
+      ".headword"
+    ]) {
+      const word = textFrom(selector);
+      if (word) {
+        return word;
+      }
+    }
+    const attr = document.querySelector("#ac_input")?.getAttribute("data-value");
+    const attrWord = clean(attr);
+    if (attrWord) {
+      return attrWord;
+    }
+    return clean(document.querySelector("meta[property='og:title']")?.content || document.title);
+  })();`;
+  return webContents.executeJavaScript(script, true).catch(() => "");
 }
 
 function isMainFrameRequest(details) {
@@ -940,6 +1184,11 @@ function navigateDictionary(word) {
     state: dictionaryStateFromUrl(url),
     expiresAt: Date.now() + DICTIONARY_NAVIGATION_SYNC_GRACE_MS
   };
+  if (currentPreloadEagerness() === "prerender") {
+    activatePrerenderedDictionaryView(dictionaryKey(currentProvider(), currentDictionaryMode()), url);
+    keepPrerenderPages(warmupGeneration).catch(() => undefined);
+    return;
+  }
   loadAllowedUrl(dictionaryView, url);
 }
 
@@ -1040,10 +1289,12 @@ function dictionaryStateFromUrl(url) {
     };
   }
   if (host === NAVER_DICTIONARY_HOST) {
+    const naverWord = wordFromSearch(parsed) || wordFromHashSearch(parsed);
     return {
       provider: "naver",
       mode: parts[0] === "english-thesaurus" ? "thesaurus" : "dictionary",
-      word: wordFromSearch(parsed) || wordFromHashSearch(parsed)
+      word: naverWord || (naverHashRoute(parsed) === "entry" ? null : ""),
+      needs_page_word: !naverWord && naverHashRoute(parsed) === "entry"
     };
   }
   return null;
@@ -1068,6 +1319,13 @@ function wordFromHashSearch(url) {
   }
   const params = new URLSearchParams(hash.slice(queryIndex + 1));
   return cleanUrlWord(params.get("query") || params.get("q") || "");
+}
+
+function naverHashRoute(url) {
+  return String(url.hash || "")
+    .replace(/^#\/?/, "")
+    .split(/[/?#]/)
+    .filter(Boolean)[0] || "";
 }
 
 function wordFromPathPart(part) {
@@ -1106,7 +1364,7 @@ function scheduleNetworkWarmup() {
   const generation = ++warmupGeneration;
   if (!remoteSession || !proxy || eagerness === "off") {
     destroyPagePreloadWindow();
-    destroyPrerenderWindows();
+    disableDictionaryPrerenderViews();
     return;
   }
 
@@ -1132,11 +1390,11 @@ async function runNetworkWarmup(eagerness, generation) {
   if (rank >= PRELOAD_EAGERNESS_RANK.prerender) {
     await keepPrerenderPages(generation);
   } else if (rank >= PRELOAD_EAGERNESS_RANK.pages) {
-    destroyPrerenderWindows();
+    disableDictionaryPrerenderViews();
     await preloadPages(warmupPageUrls(), generation);
   } else {
     destroyPagePreloadWindow();
-    destroyPrerenderWindows();
+    disableDictionaryPrerenderViews();
   }
 }
 
@@ -1186,9 +1444,9 @@ async function keepPrerenderPages(generation) {
 
   const specs = prerenderPageSpecs();
   const wantedKeys = new Set(specs.map((spec) => spec.key));
-  for (const [key, window] of prerenderWindows) {
-    if (!wantedKeys.has(key) || window.isDestroyed()) {
-      destroyPrerenderWindow(key);
+  for (const [key, view] of prerenderDictionaryViews) {
+    if (!wantedKeys.has(key) || view.webContents.isDestroyed()) {
+      destroyPrerenderDictionaryView(key);
     }
   }
 
@@ -1197,15 +1455,20 @@ async function keepPrerenderPages(generation) {
     if (generation !== warmupGeneration) {
       break;
     }
-    const window = prerenderWindowFor(spec.key);
+    const view = prerenderDictionaryViewFor(spec.key);
     if (prerenderUrlsByKey.get(spec.key) !== spec.url) {
       prerenderUrlsByKey.set(spec.key, spec.url);
-      loads.push(loadPreloadUrl(window, spec.url));
+      rememberAllowedUrl(view, spec.url);
+      loads.push(loadPreloadUrl(view, spec.url));
     }
   }
 
   await Promise.allSettled(loads);
   if (generation === warmupGeneration) {
+    activatePrerenderedDictionaryView(
+      dictionaryKey(currentProvider(), currentDictionaryMode()),
+      dictionaryUrl(currentProvider(), currentDictionaryMode(), store.snapshot().current_word)
+    );
     warmPreconnect(warmupOrigins());
   }
 }
@@ -1228,21 +1491,102 @@ function createHiddenRemoteWindow() {
   return window;
 }
 
-function prerenderWindowFor(key) {
-  const existing = prerenderWindows.get(key);
-  if (existing && !existing.isDestroyed()) {
-    return existing;
+function syncDictionaryPrerenderMode() {
+  const word = store.snapshot().current_word;
+  if (currentPreloadEagerness() === "prerender") {
+    activatePrerenderedDictionaryView(
+      dictionaryKey(currentProvider(), currentDictionaryMode()),
+      dictionaryUrl(currentProvider(), currentDictionaryMode(), word)
+    );
+    keepPrerenderPages(warmupGeneration).catch(() => undefined);
+  } else {
+    disableDictionaryPrerenderViews();
   }
-  const window = createHiddenRemoteWindow();
-  window.on("closed", () => {
-    prerenderWindows.delete(key);
-    prerenderUrlsByKey.delete(key);
-  });
-  prerenderWindows.set(key, window);
-  return window;
 }
 
-function loadPreloadUrl(window, url) {
+function activatePrerenderedDictionaryView(key, url) {
+  const view = prerenderDictionaryViewFor(key);
+  if (dictionaryView && dictionaryView !== view && !prerenderDictionaryViews.has(viewKey(dictionaryView))) {
+    destroyWebContentsView(dictionaryView);
+  }
+  dictionaryView = view;
+  rememberAllowedUrl(view, url);
+  if (prerenderUrlsByKey.get(key) !== url) {
+    prerenderUrlsByKey.set(key, url);
+    loadPreloadUrl(view, url).catch(() => undefined);
+  }
+  layoutRemoteViews();
+}
+
+function prerenderDictionaryViewFor(key) {
+  const existing = prerenderDictionaryViews.get(key);
+  if (existing && !existing.webContents.isDestroyed()) {
+    return existing;
+  }
+  const view = createView(remoteSession, false);
+  view.__wordCoachPrerenderKey = key;
+  prerenderDictionaryViews.set(key, view);
+  mainWindow?.contentView.addChildView(view);
+  view.webContents.on("destroyed", () => {
+    prerenderDictionaryViews.delete(key);
+    prerenderUrlsByKey.delete(key);
+  });
+  return view;
+}
+
+function disableDictionaryPrerenderViews() {
+  if (prerenderDictionaryViews.size === 0) {
+    return;
+  }
+  const activeUrl = dictionaryView?.webContents.isDestroyed() ? "" : dictionaryView?.webContents.getURL();
+  const activeState = activeUrl ? dictionaryStateFromUrl(activeUrl) : null;
+  destroyAllPrerenderDictionaryViews();
+  dictionaryView = createView(remoteSession, false);
+  mainWindow?.contentView.addChildView(dictionaryView);
+  loadAllowedUrl(
+    dictionaryView,
+    activeState?.provider
+      ? activeUrl
+      : dictionaryUrl(currentProvider(), currentDictionaryMode(), store.snapshot().current_word)
+  );
+  layoutRemoteViews();
+}
+
+function destroyAllPrerenderDictionaryViews() {
+  for (const key of [...prerenderDictionaryViews.keys()]) {
+    destroyPrerenderDictionaryView(key);
+  }
+}
+
+function destroyPrerenderDictionaryView(key) {
+  const view = prerenderDictionaryViews.get(key);
+  if (view) {
+    destroyWebContentsView(view);
+  }
+  prerenderDictionaryViews.delete(key);
+  prerenderUrlsByKey.delete(key);
+}
+
+function destroyWebContentsView(view) {
+  if (!view) {
+    return;
+  }
+  try {
+    mainWindow?.contentView.removeChildView(view);
+  } catch {
+    // View may already be detached.
+  }
+}
+
+function dictionaryKey(provider, mode) {
+  return `${parseProvider(provider)}:${parseDictionaryMode(mode)}`;
+}
+
+function viewKey(view) {
+  return view?.__wordCoachPrerenderKey || "";
+}
+
+function loadPreloadUrl(windowOrView, url) {
   return new Promise((resolve) => {
     let settled = false;
     const done = () => {
@@ -1252,10 +1596,10 @@ function loadPreloadUrl(window, url) {
       settled = true;
       clearTimeout(timer);
       try {
-        if (!window.isDestroyed()) {
-          window.webContents.off("did-finish-load", done);
-          window.webContents.off("did-fail-load", done);
-          window.webContents.off("did-fail-provisional-load", done);
+        if (!remoteContainerDestroyed(windowOrView)) {
+          windowOrView.webContents.off("did-finish-load", done);
+          windowOrView.webContents.off("did-fail-load", done);
+          windowOrView.webContents.off("did-fail-provisional-load", done);
         }
       } catch {
         // Hidden preload windows can be destroyed while cleanup is running.
@@ -1264,18 +1608,28 @@ function loadPreloadUrl(window, url) {
     };
     const timer = setTimeout(done, 3500);
     try {
-      if (window.isDestroyed()) {
+      if (remoteContainerDestroyed(windowOrView)) {
         done();
         return;
       }
-      window.webContents.once("did-finish-load", done);
-      window.webContents.once("did-fail-load", done);
-      window.webContents.once("did-fail-provisional-load", done);
-      window.webContents.loadURL(url).catch(done);
+      windowOrView.webContents.once("did-finish-load", done);
+      windowOrView.webContents.once("did-fail-load", done);
+      windowOrView.webContents.once("did-fail-provisional-load", done);
+      windowOrView.webContents.loadURL(url).catch(done);
     } catch {
       done();
     }
   });
+}
+
+function remoteContainerDestroyed(windowOrView) {
+  if (!windowOrView) {
+    return true;
+  }
+  if (typeof windowOrView.isDestroyed === "function") {
+    return windowOrView.isDestroyed();
+  }
+  return windowOrView.webContents.isDestroyed();
 }
 
 function destroyPagePreloadWindow() {
@@ -1283,21 +1637,6 @@ function destroyPagePreloadWindow() {
     pagePreloadWindow.destroy();
   }
   pagePreloadWindow = null;
-}
-
-function destroyPrerenderWindows() {
-  for (const key of prerenderWindows.keys()) {
-    destroyPrerenderWindow(key);
-  }
-}
-
-function destroyPrerenderWindow(key) {
-  const window = prerenderWindows.get(key);
-  if (window && !window.isDestroyed()) {
-    window.destroy();
-  }
-  prerenderWindows.delete(key);
-  prerenderUrlsByKey.delete(key);
 }
 
 function warmupOrigins() {

@@ -185,11 +185,26 @@ function cleanWord(value) {
   if (!cleaned) {
     return null;
   }
-  const words = cleaned.match(/[A-Za-z][A-Za-z'-]{1,}/g) || [];
-  if (words.length !== 1) {
+  const normalized = cleaned
+    .replace(/[“”]/g, '"')
+    .replace(/^["']+|["'.,!?;:]+$/g, "")
+    .trim();
+  if (
+    !normalized ||
+    /\b(which|what|choose|select|similar|synonym|opposite|antonym|image|picture|photo|matches|represents|means)\b/i.test(normalized)
+  ) {
     return null;
   }
-  return words[0].toLowerCase();
+  const words = normalized.match(/[A-Za-z][A-Za-z'-]*/g) || [];
+  const phrase = words.join(" ").replace(/^'+|'+$/g, "").toLowerCase();
+  if (
+    words.length < 1 ||
+    words.length > 4 ||
+    /^(word|coach|google|next|share|search|learn more|none of the above)$/.test(phrase)
+  ) {
+    return null;
+  }
+  return phrase;
 }
 
 function cleanText(value, maxLength) {

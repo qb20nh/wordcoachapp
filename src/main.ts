@@ -194,8 +194,25 @@ function formatAdblockStatus(status: AdblockStatus) {
 }
 
 function wordFromRecord(record: HistoryRecord) {
-  const fromQuestion = record.question?.match(/[A-Za-z][A-Za-z'-]{1,}/)?.[0];
+  const fromQuestion = wordFromQuestion(record.question || "");
   return record.correct_answer || record.selected_answer || fromQuestion || "";
+}
+
+function wordFromQuestion(question: string) {
+  const phrase = "([A-Za-z][A-Za-z'-]*(?:\\s+[A-Za-z][A-Za-z'-]*){0,3})";
+  const patterns = [
+    new RegExp(`["'“]${phrase}["'”]`, "i"),
+    new RegExp(`\\b(?:similar|synonym|opposite|antonym)\\b.*?\\b(?:to|of|for)\\b\\s+["'“]?${phrase}`, "i"),
+    new RegExp(`\\b(?:image|picture|photo)\\b.*?\\b(?:of|for|word|means|matches|represents)\\b\\s+["'“]?${phrase}`, "i"),
+    new RegExp(`\\b(?:matches|represents|means)\\b\\s+["'“]?${phrase}`, "i")
+  ];
+  for (const pattern of patterns) {
+    const word = cleanDisplayWord(question.match(pattern)?.[1] || "");
+    if (word) {
+      return word;
+    }
+  }
+  return "";
 }
 
 function renderHistory(records: HistoryRecord[]) {

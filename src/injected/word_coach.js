@@ -39,12 +39,10 @@
       display: flex !important;
       flex-direction: column !important;
       overflow: auto !important;
-      cursor: grab !important;
       overscroll-behavior: contain !important;
       touch-action: pan-x pan-y !important;
     }
     div[class*='knowledge_game'].word-coach-dragging {
-      cursor: grabbing !important;
       user-select: none !important;
     }
     @media (prefers-color-scheme: dark) {
@@ -307,15 +305,9 @@
   }
 
   function targetWord(textLines, optionWords, prompt) {
-    const patterns = [
-      /\b(?:similar|synonym)\b.*?\b(?:to|of|for)\b\s+["'“”]?([A-Za-z][A-Za-z'-]{1,})/i,
-      /\b(?:opposite|antonym)\b.*?\b(?:to|of|for)\b\s+["'“”]?([A-Za-z][A-Za-z'-]{1,})/i,
-      /\b(?:image|picture|photo)\b.*?\b(?:word|means|matches|represents)\b\s+["'“”]?([A-Za-z][A-Za-z'-]{1,})/i
-    ];
-    for (const pattern of patterns) {
-      const match = prompt.match(pattern);
-      const word = cleanWord(match?.[1]);
-      if (word) {
+    for (const line of [...textLines, prompt]) {
+      const word = wordFromPromptLine(line);
+      if (word && !optionWords.includes(word)) {
         return word;
       }
     }
@@ -327,6 +319,25 @@
     for (const line of candidates) {
       const word = cleanWord(line);
       if (word && !optionWords.includes(word)) {
+        return word;
+      }
+    }
+    return null;
+  }
+
+  function wordFromPromptLine(line) {
+    const phrase = "([A-Za-z][A-Za-z'-]*(?:\\s+[A-Za-z][A-Za-z'-]*){0,3})";
+    const patterns = [
+      new RegExp(`["'“]${phrase}["'”]`, "i"),
+      new RegExp(`\\b(?:similar|synonym)\\b.*?\\b(?:to|of|for)\\b\\s+["'“]?${phrase}`, "i"),
+      new RegExp(`\\b(?:opposite|antonym)\\b.*?\\b(?:to|of|for)\\b\\s+["'“]?${phrase}`, "i"),
+      new RegExp(`\\b(?:image|picture|photo)\\b.*?\\b(?:of|for|word|means|matches|represents)\\b\\s+["'“]?${phrase}`, "i"),
+      new RegExp(`\\b(?:matches|represents|means)\\b\\s+["'“]?${phrase}`, "i")
+    ];
+    for (const pattern of patterns) {
+      const match = String(line || "").match(pattern);
+      const word = cleanWord(match?.[1]);
+      if (word) {
         return word;
       }
     }
@@ -345,12 +356,28 @@
   }
 
   function cleanWord(value) {
-    const text = String(value || "").replace(/\s+/g, " ").trim();
-    const words = text.match(/[A-Za-z][A-Za-z'-]{1,}/g) || [];
-    if (words.length !== 1 || /^(word|coach|google|similar|opposite|image|picture|photo)$/i.test(words[0])) {
+    const text = String(value || "")
+      .replace(/[“”]/g, '"')
+      .replace(/\s+/g, " ")
+      .trim()
+      .replace(/^["']+|["'.,!?;:]+$/g, "");
+    if (
+      !text ||
+      text.length > 64 ||
+      /\b(which|what|choose|select|similar|synonym|opposite|antonym|image|picture|photo|matches|represents|means)\b/i.test(text)
+    ) {
       return null;
     }
-    return words[0].replace(/^'+|'+$/g, "").toLowerCase();
+    const words = text.match(/[A-Za-z][A-Za-z'-]*/g) || [];
+    const phrase = words.join(" ").replace(/^'+|'+$/g, "").toLowerCase();
+    if (
+      words.length < 1 ||
+      words.length > 4 ||
+      /^(word|coach|google|next|share|search|learn more|none of the above)$/.test(phrase)
+    ) {
+      return null;
+    }
+    return phrase;
   }
 
   let selectedAnswer = null;

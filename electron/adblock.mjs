@@ -30,6 +30,7 @@ export class AdblockService {
       error: null
     };
     this.updatePromise = null;
+    this.cacheStale = false;
   }
 
   snapshot() {
@@ -44,7 +45,7 @@ export class AdblockService {
         readJson(this.metadataPath, {})
       ]);
       if (!sameUrls(metadata.urls, FILTER_LISTS)) {
-        throw new Error("Filter cache stale");
+        this.cacheStale = true;
       }
       this.engine = FiltersEngine.deserialize(new Uint8Array(serialized));
       this.status = {
@@ -52,7 +53,7 @@ export class AdblockService {
         updating: false,
         updated_at: Number(metadata.updated_at) || null,
         list_count: FILTER_LISTS.length,
-        error: null
+        error: this.cacheStale ? "Filter cache stale; update needed" : null
       };
     } catch (error) {
       this.status.error = shortError(error);
@@ -60,7 +61,7 @@ export class AdblockService {
   }
 
   ensureReady() {
-    if (this.engine || this.updatePromise) {
+    if ((this.engine && !this.cacheStale) || this.updatePromise) {
       return this.updatePromise || Promise.resolve(this.snapshot());
     }
     return this.updateFilters();
@@ -114,7 +115,14 @@ export class AdblockService {
       updating: true,
       error: null
     };
-    const lists = await Promise.all(FILTER_LISTS.map(fetchList));
+    const results = await Promise.allSettled(FILTER_LISTS.map(fetchList));
+    const lists = results
+      .filter((result) => result.status === "fulfilled")
+      .map((result) => result.value);
+    if (lists.length === 0) {
+      throw new Error("All filter downloads failed");
+    }
+    const failures = results.length - lists.length;
     const engine = FiltersEngine.parse(lists.join("\n"));
     const updatedAt = Date.now();
     await fs.mkdir(this.baseDir, { recursive: true });
@@ -127,12 +135,13 @@ export class AdblockService {
       })
     ]);
     this.engine = engine;
+    this.cacheStale = false;
     this.status = {
       ready: true,
       updating: false,
       updated_at: updatedAt,
       list_count: FILTER_LISTS.length,
-      error: null
+      error: failures > 0 ? `${failures} filter list(s) failed; using ${lists.length}` : null
     };
     return this.snapshot();
   }
