@@ -1,0 +1,50 @@
+/* ==UserStyle==
+@name           www.google.com/search
+@namespace      github.com/openstyles/stylus
+@version        1.0.0
+@description    A new userstyle
+@author         Me
+==/UserStyle== */
+
+@-moz-document url-prefix("https://www.google.com/search?q=google+word+coach") {
+/* If the game is present, make everything invisible and non-interactable */
+body:has(div[class*='knowledge_game']) > * {
+    visibility: hidden;
+    pointer-events: none;
+    overflow: clip;
+}
+
+/* Bring only the target div and its contents back to life */
+div[class*='knowledge_game']>div:not(:empty)[class][class=""] {
+    visibility: visible;
+    pointer-events: auto;
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    width: 100vw;
+    height: 100vh;
+    transform: translate(-50%, -50%);
+    z-index: 999999;
+    display: flex;
+    flex-direction: column;
+    overflow: scroll;
+}
+    div[class*='knowledge_game']>div:not(:empty)[class][class=""]>div:first-child+div,
+    div[class*='knowledge_game']>div:not(:empty)[class][class=""]>div:first-child+div>div,
+    div[class*='knowledge_game']>div:not(:empty)[class][class=""]>div:first-child+div>div>div{
+        
+    flex-grow: 1;
+    display: flex;
+    flex-direction: column;
+    }
+    
+    
+    div[class*='knowledge_game']>div:not(:empty)[class][class=""]>div:first-child+div>div>div>*{
+        flex:auto;
+    }
+    
+    div[class*='knowledge_game']>div:not(:empty)[class][class=""]>div:has(>div:empty:first-child:last-child),
+    div[class*='knowledge_game']>div:not(:empty)[class][class=""]>div:has(>div:empty:first-child:last-child)+div{
+        display: none;
+    }
+}
