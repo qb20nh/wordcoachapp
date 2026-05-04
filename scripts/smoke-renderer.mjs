@@ -44,6 +44,7 @@ const mockSnapshot = {
   locale_options: [{ id: "en", label: "English" }],
   messages: {},
   current_word: "",
+  google_signed_in: false,
   proxy_addr: "127.0.0.1:0",
   proxy_blocked_hosts: [],
   adblock: {
@@ -216,6 +217,11 @@ const scoreSnapshot = {
   }
 };
 
+const signedInSnapshot = {
+  ...mockSnapshot,
+  google_signed_in: true
+};
+
 const preload = `
 <script>
 (() => {
@@ -223,15 +229,37 @@ const preload = `
     due: ${JSON.stringify(mockSnapshot)},
     next: ${JSON.stringify(nextReviewSnapshot)},
     empty: ${JSON.stringify(emptySnapshot)},
-    score: ${JSON.stringify(scoreSnapshot)}
+    score: ${JSON.stringify(scoreSnapshot)},
+    signedIn: ${JSON.stringify(signedInSnapshot)}
   };
   const scenarioParam = new URL(window.location.href).searchParams.get("scenario");
-  const scenario = scenarioParam === "next" ? "next" : scenarioParam === "score-goal" ? "score" : scenarioParam === "empty" || scenarioParam === "empty-reload" || scenarioParam === "manual" ? "empty" : "due";
+  const scenario = scenarioParam === "next" ? "next" : scenarioParam === "score-goal" ? "score" : scenarioParam === "signed-in" ? "signedIn" : scenarioParam === "empty" || scenarioParam === "empty-reload" || scenarioParam === "manual" ? "empty" : "due";
   const snapshot = structuredClone(snapshots[scenario]);
   const smokeNow = ${now};
   const smokeDay = ${day};
   const listeners = new Set();
   const send = () => listeners.forEach((listener) => listener(structuredClone(snapshot)));
+  const recordToastGeometry = () => {
+    const toast = document.querySelector("#toast");
+    const lookup = document.querySelector("#lookupForm");
+    const toolbar = document.querySelector(".split-toolbar");
+    if (!toast || !lookup || !toolbar) {
+      return;
+    }
+    const toastRect = toast.getBoundingClientRect();
+    const lookupRect = lookup.getBoundingClientRect();
+    const toolbarRect = toolbar.getBoundingClientRect();
+    const toastCenterX = toastRect.left + toastRect.width / 2;
+    const toastCenterY = toastRect.top + toastRect.height / 2;
+    const toolbarCenterY = toolbarRect.top + toolbarRect.height / 2;
+    document.body.dataset.smokeToastCentered = String(Math.abs(toastCenterX - window.innerWidth / 2) <= 2);
+    document.body.dataset.smokeToastBelowSearch = String(toastRect.top >= lookupRect.bottom);
+    document.body.dataset.smokeToastInButtonBar = String(
+      toastCenterY >= toolbarRect.top &&
+        toastCenterY <= toolbarRect.bottom &&
+        Math.abs(toastCenterY - toolbarCenterY) <= 3
+    );
+  };
   window.addEventListener("unhandledrejection", (event) => {
     document.body.dataset.smokeUnhandled = String(
       event.reason && event.reason.message ? event.reason.message : event.reason
@@ -240,6 +268,12 @@ const preload = `
   window.addEventListener("load", () => {
     window.setTimeout(() => {
       document.body.dataset.smokeTitle = document.title;
+      const googleSignIn = document.querySelector("#googleSignIn");
+      const googleLogout = document.querySelector("#googleLogout");
+      document.body.dataset.smokeGoogleSignInHidden = String(Boolean(googleSignIn?.hidden));
+      document.body.dataset.smokeGoogleLogoutHidden = String(Boolean(googleLogout?.hidden));
+      document.body.dataset.smokeGoogleSignInDisplay = googleSignIn ? getComputedStyle(googleSignIn).display : "";
+      document.body.dataset.smokeGoogleLogoutDisplay = googleLogout ? getComputedStyle(googleLogout).display : "";
     }, 500);
   });
   window.wordCoach = {
@@ -370,6 +404,10 @@ const preload = `
     },
     setUiOverlayOpen: async () => {},
     openGoogleSignIn: async () => {},
+    logoutGoogle: async () => {
+      window.__wordCoachSmokeLoggedOut = "true";
+      return true;
+    },
     reloadCoach: async () => {
       window.__wordCoachSmokeReloaded = "true";
     },
@@ -431,6 +469,7 @@ const preload = `
       window.setTimeout(() => {
         document.body.dataset.smokeLookupToast = document.querySelector("#toast")?.textContent || "";
         document.body.dataset.smokeSearch = window.__wordCoachSmokeSearch || "";
+        recordToastGeometry();
       }, 1000);
     });
   }
@@ -668,9 +707,10 @@ try {
   assertIncludes(scoreGoalHtml, "360 pts left");
   assertIncludes(scoreGoalHtml, 'data-progress="40"');
   assertIncludes(scoreGoalHtml, 'aria-label="Daily score goal"');
-  assertIncludes(html, "Accuracy 67%");
   assertIncludes(html, "Streak 2d");
   assertIncludes(html, "Review 1");
+  assertNotIncludes(html, "Accuracy 67%");
+  assertIncludes(html, "Practice now");
   assertIncludes(html, 'data-word="abundant"');
   assertIncludes(html, 'data-review="true"');
   assertIncludes(html, 'data-review-choice="true"');
@@ -680,30 +720,41 @@ try {
   assertNotIncludes(html, 'data-word="plenty"');
   assertIncludes(html, 'data-word="reticent"');
   assertNotIncludes(html, 'data-word="Conversation"');
-  assertIncludes(html, "Picked I don't know; Answer plenty");
+  assertNotIncludes(html, "Picked I don't know; Answer plenty");
   assertIncludes(html, 'data-review-complete="true"');
+  assertIncludes(html, "Known");
   assertIncludes(html, "Mark abundant reviewed");
-  assertIncludes(html, 'data-mistakes="2"');
   assertIncludes(html, "Review abundant:");
   assertIncludes(html, "Review 1 due");
-  assertIncludes(html, "Upcoming");
-  assertIncludes(html, 'data-review-upcoming="true"');
-  assertIncludes(html, 'data-word="careful"');
-  assertIncludes(html, "Due ");
+  assertIncludes(html, "Later");
+  assertIncludes(html, "1 for later");
+  assertNotIncludes(html, 'data-review-upcoming="true"');
+  assertNotIncludes(html, 'data-word="careful"');
+  assertNotIncludes(html, "Due ");
   assertIncludes(html, "2 incomplete records hidden");
   assertIncludes(html, "3 duplicate records hidden");
-  assertIncludes(html, "x2");
-  assertIncludes(html, 'data-count="3"');
-  assertMatchCount(html, /data-study-day=/g, 7);
+  assertIncludes(html, "Recent words");
+  assertIncludes(html, 'data-smoke-google-sign-in-hidden="false"');
+  assertIncludes(html, 'data-smoke-google-logout-hidden="true"');
+  assertIncludes(html, 'data-smoke-google-sign-in-display="flex"');
+  assertIncludes(html, 'data-smoke-google-logout-display="none"');
+  assertNotIncludes(html, "x2");
+  assertNotIncludes(html, 'data-study-day=');
+  const signedInHtml = await dumpDom(`http://127.0.0.1:${port}/?scenario=signed-in`);
+  assertIncludes(signedInHtml, 'data-smoke-google-sign-in-hidden="true"');
+  assertIncludes(signedInHtml, 'data-smoke-google-logout-hidden="false"');
+  assertIncludes(signedInHtml, 'data-smoke-google-sign-in-display="none"');
+  assertIncludes(signedInHtml, 'data-smoke-google-logout-display="flex"');
   const nextHtml = await dumpDom(`http://127.0.0.1:${port}/?scenario=next`);
   assertIncludes(nextHtml, 'data-smoke-title="Word Coach"');
-  assertIncludes(nextHtml, "Next ");
-  assertIncludes(nextHtml, "Pending 1");
-  assertIncludes(nextHtml, "Upcoming");
-  assertIncludes(nextHtml, 'data-review-upcoming="true"');
+  assertNotIncludes(nextHtml, "Next ");
+  assertNotIncludes(nextHtml, "Pending 1");
+  assertIncludes(nextHtml, "Later");
+  assertIncludes(nextHtml, "1 for later");
+  assertNotIncludes(nextHtml, 'data-review-upcoming="true"');
   assertIncludes(nextHtml, "Today 3/10");
-  assertIncludes(nextHtml, "Accuracy 67%");
-  assertMatchCount(nextHtml, /data-study-day=/g, 7);
+  assertNotIncludes(nextHtml, "Accuracy 67%");
+  assertNotIncludes(nextHtml, 'data-study-day=');
   const emptyHtml = await dumpDom(`http://127.0.0.1:${port}/?scenario=empty`);
   assertIncludes(emptyHtml, "No words yet");
   assertIncludes(emptyHtml, "Today starts with the first captured answer.");
@@ -743,6 +794,9 @@ try {
   const lookupEmptyHtml = await dumpDom(`http://127.0.0.1:${port}/?scenario=lookup-empty`);
   assertIncludes(lookupEmptyHtml, 'data-smoke-lookup-toast="Enter a word to search"');
   assertIncludes(lookupEmptyHtml, 'data-smoke-search=""');
+  assertIncludes(lookupEmptyHtml, 'data-smoke-toast-centered="true"');
+  assertIncludes(lookupEmptyHtml, 'data-smoke-toast-below-search="true"');
+  assertIncludes(lookupEmptyHtml, 'data-smoke-toast-in-button-bar="true"');
   const lookupErrorHtml = await dumpDom(`http://127.0.0.1:${port}/?scenario=lookup-error`);
   assertIncludes(lookupErrorHtml, 'data-smoke-lookup-toast="Dictionary navigation failed"');
   assertIncludes(lookupErrorHtml, 'data-smoke-unhandled=""');
@@ -770,7 +824,7 @@ try {
   assertIncludes(completeErrorHtml, 'data-smoke-complete-toast="Review completion failed"');
   assertIncludes(completeErrorHtml, 'data-smoke-unhandled=""');
   assertIncludes(completeErrorHtml, 'data-smoke-review-busy="false"');
-  console.log("Renderer smoke passed: study summary, review queue, upcoming review backlog, empty/manual states, settings/toolbar errors, lookup/manual feedback, import summary/error, filter recovery, review click/error, review answer/error, and review completion/error rendered.");
+  console.log("Renderer smoke passed: study summary, review queue, upcoming review backlog, auth controls, empty/manual states, settings/toolbar errors, lookup/manual feedback, import summary/error, filter recovery, review click/error, review answer/error, and review completion/error rendered.");
 } finally {
   await new Promise((resolve) => server.close(resolve));
 }

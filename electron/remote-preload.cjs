@@ -3,6 +3,18 @@
   contextBridge.exposeInMainWorld("__wordCoachDarkReaderFetch", async (url) =>
     ipcRenderer.invoke("wordcoach:darkreader-fetch", String(url || ""), location.href)
   );
+  const bootHideStyleId = "wordcoach-boot-hide-style";
+  const bootHideCss = `
+    html[data-wordcoach-boot-hidden],
+    html[data-wordcoach-boot-hidden] body {
+      background-color: Canvas !important;
+    }
+    html[data-wordcoach-boot-hidden] body {
+      opacity: 0 !important;
+      visibility: hidden !important;
+      pointer-events: none !important;
+    }
+  `;
   const autoDarkCss = `
     :root {
       color-scheme: light dark;
@@ -61,6 +73,65 @@
     media.addEventListener("change", syncAutoColorScheme);
   } else {
     media?.addListener?.(syncAutoColorScheme);
+  }
+
+  const isWordCoachSearchPage = () => {
+    try {
+      const url = new URL(location.href);
+      const query = (url.searchParams.get("q") || "")
+        .replace(/\s+/g, " ")
+        .trim()
+        .toLowerCase();
+      return (
+        url.hostname.toLowerCase().startsWith("www.google.") &&
+        url.pathname === "/search" &&
+        query === "google word coach"
+      );
+    } catch (_) {
+      return false;
+    }
+  };
+
+  const injectBootHideCss = () => {
+    const root = document.head || document.documentElement;
+    if (!root || document.getElementById(bootHideStyleId)) {
+      return false;
+    }
+    const style = document.createElement("style");
+    style.id = bootHideStyleId;
+    style.textContent = bootHideCss;
+    root.appendChild(style);
+    return true;
+  };
+
+  const removeBootHide = (timedOut = false) => {
+    const root = document.documentElement;
+    if (!root?.dataset.wordcoachBootHidden) {
+      return;
+    }
+    if (timedOut) {
+      root.dataset.wordcoachBootTimedOut = "true";
+    }
+    delete root.dataset.wordcoachBootHidden;
+    document.getElementById(bootHideStyleId)?.remove?.();
+  };
+
+  const hideWordCoachBoot = () => {
+    const root = document.documentElement;
+    if (!root) {
+      return false;
+    }
+    root.dataset.wordcoachBootHidden = "true";
+    root.dataset.wordcoachBootHiddenAt = String(Date.now());
+    if (!injectBootHideCss()) {
+      document.addEventListener("readystatechange", () => injectBootHideCss(), { once: true });
+    }
+    window.setTimeout(() => removeBootHide(true), 10_000);
+    return true;
+  };
+
+  if (isWordCoachSearchPage() && !hideWordCoachBoot()) {
+    document.addEventListener("readystatechange", () => hideWordCoachBoot(), { once: true });
   }
 
   const injectAutoDarkCss = () => {

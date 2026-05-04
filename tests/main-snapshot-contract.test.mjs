@@ -57,6 +57,61 @@ test("preload API, renderer calls, and main IPC handlers stay aligned", async ()
   );
 });
 
+test("Google logout confirms before clearing Google session data", async () => {
+  const mainSource = await fs.readFile("electron/main.mjs", "utf8");
+  const logoutSource = functionBodySource(mainSource, "logoutGoogleAccount");
+  const confirmIndex = logoutSource.indexOf("confirmGoogleLogout");
+  const clearIndex = logoutSource.indexOf("clearGoogleSessionData");
+
+  assert.match(mainSource, /ipcMain\.handle\("wordcoach:logout-google", \(\) => logoutGoogleAccount\(\)\)/);
+  assert.ok(confirmIndex !== -1, "Google logout should ask for confirmation");
+  assert.ok(clearIndex !== -1, "Google logout should clear session data");
+  assert.ok(confirmIndex < clearIndex, "confirmation should happen before session clearing");
+  assert.match(functionBodySource(mainSource, "confirmGoogleLogout"), /dialog\.showMessageBox/);
+  assert.match(functionBodySource(mainSource, "clearGoogleSessionData"), /clearData/);
+  assert.match(functionBodySource(mainSource, "clearGoogleSessionData"), /clearGoogleCookies/);
+});
+
+test("Google session status comes from auth cookies and snapshots", async () => {
+  const mainSource = await fs.readFile("electron/main.mjs", "utf8");
+  const sessionSource = functionBodySource(mainSource, "googleSessionSignedIn");
+  const cookieSource = functionBodySource(mainSource, "googleAuthCookie");
+  const logoutSource = functionBodySource(mainSource, "logoutGoogleAccount");
+
+  assert.match(mainSource, /const GOOGLE_AUTH_COOKIE_NAMES = new Set/);
+  assert.match(mainSource, /remoteSession\.cookies\.on\("changed"/);
+  assert.match(mainSource, /google_signed_in: googleSignedIn/);
+  assert.match(sessionSource, /cookies\.get\(\{\}\)/);
+  assert.match(sessionSource, /some\(googleAuthCookie\)/);
+  assert.match(cookieSource, /GOOGLE_AUTH_COOKIE_NAMES\.has/);
+  assert.match(cookieSource, /googleCookieDomainAllowed/);
+  assert.match(logoutSource, /googleSignedIn = await googleSessionSignedIn\(remoteSession\)/);
+  assert.match(logoutSource, /sendSnapshot\(\)/);
+});
+
+test("main avoids deprecated dictionary navigation and duplicate remote loads", async () => {
+  const mainSource = await fs.readFile("electron/main.mjs", "utf8");
+
+  assert.doesNotMatch(mainSource, /webContents\.canGoBack\(/);
+  assert.doesNotMatch(mainSource, /webContents\.canGoForward\(/);
+  assert.doesNotMatch(mainSource, /webContents\.goBack\(/);
+  assert.doesNotMatch(mainSource, /webContents\.goForward\(/);
+  assert.match(mainSource, /navigationHistory\?\.canGoBack/);
+  assert.match(mainSource, /navigationHistory\?\.canGoForward/);
+  assert.match(mainSource, /navigationHistory\.goBack/);
+  assert.match(mainSource, /navigationHistory\.goForward/);
+
+  const remoteLoadSource = functionBodySource(mainSource, "loadRemoteWebContentsUrl");
+  assert.match(remoteLoadSource, /existing\?\.url === url/);
+  assert.match(remoteLoadSource, /return existing\.promise/);
+  assert.match(remoteLoadSource, /remoteLoadsByWebContentsId\.set/);
+
+  const preloadLoadSource = functionBodySource(mainSource, "loadPreloadUrl");
+  assert.match(preloadLoadSource, /existing\?\.url === url/);
+  assert.match(preloadLoadSource, /return existing\.promise/);
+  assert.match(preloadLoadSource, /preloadLoadsByWebContentsId\.set/);
+});
+
 function snapshotTypeFields(source) {
   const match = source.match(/type AppSnapshot = \{([\s\S]*?)\n\};/);
   assert.ok(match, "renderer AppSnapshot type should exist");
@@ -83,6 +138,15 @@ function preloadInvokeChannels(source) {
 
 function mainIpcChannels(source) {
   return unique([...source.matchAll(/ipcMain\.handle\("([^"]+)"/g)].map((channel) => channel[1]));
+}
+
+function functionBodySource(source, name) {
+  const functionStart = source.indexOf(`function ${name}(`);
+  assert.notEqual(functionStart, -1, `${name} function should exist`);
+  const bodyStart = source.indexOf("{", functionStart);
+  assert.notEqual(bodyStart, -1, `${name} function should have a body`);
+  const bodyEnd = matchingBraceIndex(source, bodyStart);
+  return source.slice(bodyStart + 1, bodyEnd);
 }
 
 function unique(values) {

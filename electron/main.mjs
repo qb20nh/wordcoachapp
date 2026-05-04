@@ -79,6 +79,35 @@ const WARMUP_ORIGINS = [
   "https://content-loader.com",
   "https://d3d4gnv047l844.cloudfront.net"
 ];
+const GOOGLE_LOGOUT_ORIGINS = [
+  "https://accounts.google.com",
+  "https://myaccount.google.com",
+  "https://ogs.google.com",
+  "https://www.google.com",
+  "https://www.google.co.in",
+  "https://www.google.co.kr"
+];
+const GOOGLE_LOGOUT_DATA_TYPES = [
+  "cache",
+  "cookies",
+  "fileSystems",
+  "indexedDB",
+  "localStorage",
+  "serviceWorkers",
+  "webSQL"
+];
+const GOOGLE_AUTH_COOKIE_NAMES = new Set([
+  "SID",
+  "HSID",
+  "SSID",
+  "APISID",
+  "SAPISID",
+  "LSID",
+  "__Secure-1PSID",
+  "__Secure-3PSID",
+  "__Secure-1PAPISID",
+  "__Secure-3PAPISID"
+]);
 const NAVER_DICTIONARY_HOST = "english.dict.naver.com";
 const NAVER_ALLOWED_DICTIONARY_PATHS = new Set(["english-dictionary", "english-thesaurus"]);
 const COLOR_SCHEME_ATTRIBUTE = "wordcoachColorScheme";
@@ -119,6 +148,9 @@ let themeSyncTimer = null;
 let systemColorSchemeCache = { value: "light", expiresAt: 0 };
 let uiOverlayOpen = false;
 let darkReaderSourceCache = null;
+let googleSignedIn = false;
+let googleSessionStatusTimer = null;
+let googleSessionStatusPromise = null;
 const remoteViewsByWebContentsId = new Map();
 const lastAllowedUrlByWebContentsId = new Map();
 const prerenderDictionaryViews = new Map();
@@ -127,6 +159,7 @@ const pendingBlockedDialogs = new Set();
 const cosmeticCssKeysByWebContentsId = new Map();
 const remoteThemeRunIdsByWebContentsId = new Map();
 const remoteThemeStateByWebContentsId = new Map();
+const remoteLoadsByWebContentsId = new Map();
 const preloadLoadsByWebContentsId = new Map();
 const remoteThemeReadyByWebContentsId = new Map();
 
@@ -148,6 +181,10 @@ app.on("before-quit", () => {
   if (themeSyncTimer) {
     clearInterval(themeSyncTimer);
     themeSyncTimer = null;
+  }
+  if (googleSessionStatusTimer) {
+    clearTimeout(googleSessionStatusTimer);
+    googleSessionStatusTimer = null;
   }
   destroyPagePreloadWindow();
   destroyAllPrerenderDictionaryViews();
@@ -171,6 +208,7 @@ async function start() {
 
   remoteSession = session.fromPartition("persist:wordcoach");
   await configureRemoteSession(remoteSession);
+  googleSignedIn = await googleSessionSignedIn(remoteSession);
   registerIpc();
   adblocker
     .ensureReady()
@@ -258,6 +296,11 @@ async function configureRemoteSession(remoteSession) {
     };
     callback({ requestHeaders: headers });
   });
+  remoteSession.cookies.on("changed", (_event, cookie) => {
+    if (googleAuthCookie(cookie)) {
+      scheduleGoogleSessionStatusRefresh();
+    }
+  });
 }
 
 function createRemoteViews(remoteSession) {
@@ -297,6 +340,7 @@ function createView(remoteSession, includeExtractor) {
     cosmeticCssKeysByWebContentsId.delete(webContentsId);
     remoteThemeRunIdsByWebContentsId.delete(webContentsId);
     remoteThemeStateByWebContentsId.delete(webContentsId);
+    remoteLoadsByWebContentsId.delete(webContentsId);
     preloadLoadsByWebContentsId.delete(webContentsId);
     remoteThemeReadyByWebContentsId.delete(webContentsId);
   });
@@ -556,6 +600,7 @@ function registerIpc() {
       loadAllowedUrl(coachView, googleSignInUrl());
     }
   });
+  ipcMain.handle("wordcoach:logout-google", () => logoutGoogleAccount());
   ipcMain.handle("wordcoach:reload-coach", () => {
     coachView?.webContents.reload();
   });
@@ -563,13 +608,15 @@ function registerIpc() {
     dictionaryView?.webContents.reload();
   });
   ipcMain.handle("wordcoach:dictionary-back", () => {
-    if (dictionaryView?.webContents.canGoBack()) {
-      dictionaryView.webContents.goBack();
+    const webContents = dictionaryView?.webContents;
+    if (canNavigateBack(webContents)) {
+      webContents.navigationHistory.goBack();
     }
   });
   ipcMain.handle("wordcoach:dictionary-forward", () => {
-    if (dictionaryView?.webContents.canGoForward()) {
-      dictionaryView.webContents.goForward();
+    const webContents = dictionaryView?.webContents;
+    if (canNavigateForward(webContents)) {
+      webContents.navigationHistory.goForward();
     }
   });
   ipcMain.handle("wordcoach:export-history", async () => {
@@ -615,6 +662,71 @@ function registerIpc() {
   );
 }
 
+function canNavigateBack(webContents) {
+  return Boolean(
+    webContents &&
+      !webContents.isDestroyed() &&
+      webContents.navigationHistory?.canGoBack?.()
+  );
+}
+
+function canNavigateForward(webContents) {
+  return Boolean(
+    webContents &&
+      !webContents.isDestroyed() &&
+      webContents.navigationHistory?.canGoForward?.()
+  );
+}
+
+async function googleSessionSignedIn(targetSession) {
+  if (!targetSession) {
+    return false;
+  }
+  try {
+    const cookies = await targetSession.cookies.get({});
+    return cookies.some(googleAuthCookie);
+  } catch {
+    return false;
+  }
+}
+
+function googleAuthCookie(cookie) {
+  return Boolean(
+    cookie &&
+      GOOGLE_AUTH_COOKIE_NAMES.has(cookie.name) &&
+      googleCookieDomainAllowed(cookie.domain)
+  );
+}
+
+function scheduleGoogleSessionStatusRefresh() {
+  if (googleSessionStatusTimer) {
+    return;
+  }
+  googleSessionStatusTimer = setTimeout(() => {
+    googleSessionStatusTimer = null;
+    refreshGoogleSessionStatus().catch(() => undefined);
+  }, 250);
+}
+
+async function refreshGoogleSessionStatus() {
+  if (googleSessionStatusPromise) {
+    return googleSessionStatusPromise;
+  }
+  googleSessionStatusPromise = (async () => {
+    const nextSignedIn = await googleSessionSignedIn(remoteSession);
+    if (googleSignedIn !== nextSignedIn) {
+      googleSignedIn = nextSignedIn;
+      sendSnapshot();
+    }
+    return googleSignedIn;
+  })();
+  try {
+    return await googleSessionStatusPromise;
+  } finally {
+    googleSessionStatusPromise = null;
+  }
+}
+
 function appSnapshot() {
   const snapshot = store.snapshot();
   const locale = currentLocale();
@@ -636,6 +748,7 @@ function appSnapshot() {
     locale_options: localeOptionsFor(locale),
     messages: messagesFor(locale),
     current_word: snapshot.current_word,
+    google_signed_in: googleSignedIn,
     proxy_addr: proxy.addr,
     proxy_blocked_hosts: proxy.blockedHosts(),
     adblock: adblocker?.snapshot() || {
@@ -716,6 +829,71 @@ function googleUrl(locale = currentLocale()) {
 
 function googleSignInUrl() {
   return "https://accounts.google.com/ServiceLogin?continue=" + encodeURIComponent(googleUrl());
+}
+
+async function logoutGoogleAccount() {
+  if (!(await confirmGoogleLogout())) {
+    return false;
+  }
+  await clearGoogleSessionData();
+  googleSignedIn = await googleSessionSignedIn(remoteSession);
+  sendSnapshot();
+  if (coachView && !coachView.webContents.isDestroyed()) {
+    await loadAllowedUrl(coachView, googleUrl());
+  }
+  return true;
+}
+
+async function confirmGoogleLogout() {
+  const options = {
+    type: "warning",
+    title: t("google_logout_confirm_title"),
+    message: t("google_logout_confirm_message"),
+    detail: t("google_logout_confirm_detail"),
+    buttons: [t("cancel"), t("google_logout")],
+    defaultId: 0,
+    cancelId: 0,
+    noLink: true
+  };
+  const result = mainWindow
+    ? await dialog.showMessageBox(mainWindow, options)
+    : await dialog.showMessageBox(options);
+  return result.response === 1;
+}
+
+async function clearGoogleSessionData() {
+  if (!remoteSession) {
+    return;
+  }
+  await remoteSession.clearAuthCache().catch(() => undefined);
+  await remoteSession.clearData({
+    origins: GOOGLE_LOGOUT_ORIGINS,
+    dataTypes: GOOGLE_LOGOUT_DATA_TYPES,
+    originMatchingMode: "third-parties-included"
+  });
+  await clearGoogleCookies(remoteSession);
+  await remoteSession.clearHostResolverCache().catch(() => undefined);
+  await remoteSession.closeAllConnections().catch(() => undefined);
+}
+
+async function clearGoogleCookies(targetSession) {
+  const cookies = await targetSession.cookies.get({});
+  await Promise.allSettled(
+    cookies
+      .filter((cookie) => googleCookieDomainAllowed(cookie.domain))
+      .map((cookie) => targetSession.cookies.remove(googleCookieUrl(cookie), cookie.name))
+  );
+}
+
+function googleCookieDomainAllowed(domain) {
+  const host = String(domain || "").replace(/^\./, "").toLowerCase();
+  return /(^|\.)google\.(?:com|[a-z]{2}|co\.[a-z]{2}|com\.[a-z]{2})$/.test(host);
+}
+
+function googleCookieUrl(cookie) {
+  const host = String(cookie.domain || "google.com").replace(/^\./, "") || "google.com";
+  const path = String(cookie.path || "/");
+  return `${cookie.secure ? "https" : "http"}://${host}${path.startsWith("/") ? path : `/${path}`}`;
 }
 
 function startThemeSyncTimer() {
@@ -1704,7 +1882,32 @@ async function wasRecentUserLinkClick(view, url) {
 function loadAllowedUrl(view, url) {
   rememberAllowedUrl(view, url);
   markRemoteThemePending(view);
-  return view.webContents.loadURL(url);
+  return loadRemoteWebContentsUrl(view.webContents, url);
+}
+
+function loadRemoteWebContentsUrl(webContents, url) {
+  if (!webContents || webContents.isDestroyed()) {
+    return Promise.resolve();
+  }
+  const webContentsId = webContents.id;
+  const existing = remoteLoadsByWebContentsId.get(webContentsId);
+  if (existing?.url === url) {
+    return existing.promise;
+  }
+  try {
+    if (existing && webContents.isLoading()) {
+      webContents.stop();
+    }
+  } catch {
+    // Navigation can finish or be destroyed between checks.
+  }
+  const promise = webContents.loadURL(url).finally(() => {
+    if (remoteLoadsByWebContentsId.get(webContentsId)?.promise === promise) {
+      remoteLoadsByWebContentsId.delete(webContentsId);
+    }
+  });
+  remoteLoadsByWebContentsId.set(webContentsId, { url, promise });
+  return promise;
 }
 
 function rememberAllowedUrl(view, url) {
@@ -2325,6 +2528,9 @@ function loadPreloadUrl(windowOrView, url) {
   }
   const webContentsId = windowOrView.webContents.id;
   const existing = preloadLoadsByWebContentsId.get(webContentsId);
+  if (existing?.url === url) {
+    return existing.promise;
+  }
   existing?.cancel?.();
   try {
     if (!remoteContainerDestroyed(windowOrView) && windowOrView.webContents.isLoading()) {
@@ -2334,6 +2540,7 @@ function loadPreloadUrl(windowOrView, url) {
     // The page can finish or be destroyed between checks.
   }
 
+  const loadRecord = { url, promise: null, cancel: null };
   const promise = new Promise((resolve) => {
     let settled = false;
     let timer = null;
@@ -2363,10 +2570,8 @@ function loadPreloadUrl(windowOrView, url) {
         return;
       }
       timer = setTimeout(done, 3500);
-      preloadLoadsByWebContentsId.set(webContentsId, {
-        url,
-        cancel: done
-      });
+      loadRecord.cancel = done;
+      preloadLoadsByWebContentsId.set(webContentsId, loadRecord);
       windowOrView.webContents.once("did-finish-load", done);
       windowOrView.webContents.once("did-fail-load", done);
       windowOrView.webContents.once("did-fail-provisional-load", done);
@@ -2375,6 +2580,7 @@ function loadPreloadUrl(windowOrView, url) {
       done();
     }
   });
+  loadRecord.promise = promise;
   return promise;
 }
 

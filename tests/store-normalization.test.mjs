@@ -263,6 +263,30 @@ test("strips Korean notification chrome from structured quiz captures", () => {
   assert.equal(record.result, null);
 });
 
+test("keeps Korean new-word prompt as the review word instead of answer options", () => {
+  const record = normalizeCapture({
+    captured_at: 7,
+    question:
+      "단어 과외 점수 • 0 0 새로운 단어를 배워보세요 notional과(와) 뜻이 비슷한 단어는 무엇인가요? Oratorical 또는 Hypothetical",
+    options: ["Oratorical", "Hypothetical"],
+    word_log: ["oratorical", "hypothetical"],
+    selected_answer: "Oratorical",
+    correct_answer: "Hypothetical",
+    result: "incorrect",
+    source_url: "https://www.google.co.in/search?q=google+word+coach&hl=ko&gl=IN"
+  });
+
+  assert.deepEqual(record.word_log, ["notional", "oratorical", "hypothetical"]);
+  assert.deepEqual(
+    reviewQueue([record]).map((item) => item.word),
+    ["notional"]
+  );
+  assert.deepEqual(reviewQueue([record])[0].last_wrong_options, [
+    "Oratorical",
+    "Hypothetical"
+  ]);
+});
+
 test("rejects localized result-summary chrome without active quiz structure", () => {
   const record = normalizeCapture({
     captured_at: 6,

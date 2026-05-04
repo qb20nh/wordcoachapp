@@ -40,9 +40,11 @@ async function loadHelpers() {
   return hook.helpers;
 }
 
-async function loadRuntimeHarness() {
+async function loadRuntimeHarness(options = {}) {
   const listeners = new Map();
   const timeouts = [];
+  const animationFrames = [];
+  const styles = new Map();
   let now = 1_000;
   const buttonNodes = [];
   class FakeElement {
@@ -85,6 +87,31 @@ async function loadRuntimeHarness() {
   };
   root.setPointerCapture = () => undefined;
   root.releasePointerCapture = () => undefined;
+  const documentElement = {
+    dataset: options.bootHidden ? { wordcoachBootHidden: "true" } : {},
+    appendChild(node) {
+      if (node.id) {
+        styles.set(node.id, node);
+      }
+    }
+  };
+  if (options.bootHidden) {
+    styles.set("wordcoach-boot-hide-style", {
+      id: "wordcoach-boot-hide-style",
+      remove() {
+        styles.delete(this.id);
+      }
+    });
+  }
+  const createStyle = () => ({
+    id: "",
+    textContent: "",
+    remove() {
+      if (this.id) {
+        styles.delete(this.id);
+      }
+    }
+  });
   const document = {
     readyState: "complete",
     addEventListener(type, listener) {
@@ -92,18 +119,20 @@ async function loadRuntimeHarness() {
       bucket.push(listener);
       listeners.set(type, bucket);
     },
-    getElementById() {
-      return null;
+    getElementById(id) {
+      return styles.get(id) || null;
     },
     createElement() {
-      return {};
+      return createStyle();
     },
     head: {
-      appendChild() {}
+      appendChild(node) {
+        if (node.id) {
+          styles.set(node.id, node);
+        }
+      }
     },
-    documentElement: {
-      appendChild() {}
-    },
+    documentElement,
     querySelector() {
       return root;
     }
@@ -111,6 +140,9 @@ async function loadRuntimeHarness() {
   const location = { href: "https://www.google.com/search?q=google+word+coach" };
   const window = {
     __WORD_COACH_CUSTOM_CSS: "",
+    requestAnimationFrame(callback) {
+      animationFrames.push(callback);
+    },
     setTimeout(callback, delay) {
       timeouts.push({ callback, delay });
     }
@@ -138,9 +170,22 @@ async function loadRuntimeHarness() {
     }
   };
   const runTimers = () => {
-    for (const timer of timeouts.splice(0).sort((left, right) => left.delay - right.delay)) {
-      now = 1_000 + timer.delay;
-      timer.callback();
+    let guard = 0;
+    while (timeouts.length && guard < 20) {
+      guard += 1;
+      for (const timer of timeouts.splice(0).sort((left, right) => left.delay - right.delay)) {
+        now = 1_000 + timer.delay;
+        timer.callback();
+      }
+    }
+  };
+  const runAnimationFrames = () => {
+    let guard = 0;
+    while (animationFrames.length && guard < 20) {
+      guard += 1;
+      for (const callback of animationFrames.splice(0)) {
+        callback();
+      }
     }
   };
   const setText = (text) => {
@@ -153,7 +198,7 @@ async function loadRuntimeHarness() {
     return button;
   };
 
-  return { addButton, dispatch, location, runTimers, setText };
+  return { addButton, dispatch, document, location, runAnimationFrames, runTimers, setText, styles };
 }
 
 function rootWithButtons(buttons, text = "") {
@@ -175,6 +220,22 @@ function rootWithButtons(buttons, text = "") {
     }
   };
 }
+
+test("releases the preload boot hide only after injected css settles", async () => {
+  const harness = await loadRuntimeHarness({ bootHidden: true });
+
+  assert.equal(harness.document.documentElement.dataset.wordcoachBootHidden, "true");
+  assert.ok(harness.styles.has("word-coach-style"));
+  assert.ok(harness.styles.has("wordcoach-boot-hide-style"));
+
+  harness.runAnimationFrames();
+  assert.equal(harness.document.documentElement.dataset.wordcoachBootHidden, "true");
+
+  harness.runTimers();
+  assert.equal(harness.document.documentElement.dataset.wordcoachBootHidden, undefined);
+  assert.equal(harness.document.documentElement.dataset.wordcoachBootReady, "true");
+  assert.equal(harness.styles.has("wordcoach-boot-hide-style"), false);
+});
 
 test("derives incorrect result from selected option and marked correct option", async () => {
   const helpers = await loadHelpers();
@@ -224,6 +285,28 @@ test("derives answer options from quiz buttons when prompt text omits choices", 
     ),
     ["Forfeiture", "Composure"]
   );
+});
+
+test("captures Korean new-word prompts as the prompted word", async () => {
+  const harness = await loadRuntimeHarness();
+  harness.setText(
+    "단어 과외 점수 • 0 0 새로운 단어를 배워보세요 notional과(와) 뜻이 비슷한 단어는 무엇인가요? Oratorical 또는 Hypothetical Question 1 of 5"
+  );
+  const selected = harness.addButton("Oratorical");
+  harness.addButton("Hypothetical", { style: "color: rgb(24, 128, 56)" });
+
+  harness.dispatch("pointerdown", selected);
+  harness.dispatch("click", selected);
+  harness.runTimers();
+
+  const payload = JSON.parse(
+    decodeURIComponent(new URL(harness.location.href).searchParams.get("payload"))
+  );
+  assert.deepEqual(payload.options, ["Oratorical", "Hypothetical"]);
+  assert.deepEqual(payload.word_log, ["notional", "oratorical", "hypothetical"]);
+  assert.equal(payload.selected_answer, "Oratorical");
+  assert.equal(payload.correct_answer, "Hypothetical");
+  assert.equal(payload.result, "incorrect");
 });
 
 test("recognizes Korean incorrect feedback as fallback", async () => {
@@ -288,6 +371,27 @@ test("keeps the pre-click score when Google updates before click handlers run", 
   assert.equal(payload.score_before, 0);
   assert.equal(payload.score_after, 280);
   assert.equal(payload.score_delta, 280);
+});
+
+test("keeps pre-click quiz words when Google collapses the answered prompt", async () => {
+  const harness = await loadRuntimeHarness();
+  harness.addButton("Forfeiture");
+  const selected = harness.addButton("Composure");
+
+  harness.dispatch("pointerdown", selected);
+  harness.setText("WORD COACH Score 280 equanimity");
+  harness.dispatch("click", selected);
+  harness.runTimers();
+
+  const payload = JSON.parse(
+    decodeURIComponent(new URL(harness.location.href).searchParams.get("payload"))
+  );
+  assert.equal(payload.question, "WORD COACH Score 0 Which word is similar to equanimity? Forfeiture or Composure");
+  assert.deepEqual(payload.options, ["Forfeiture", "Composure"]);
+  assert.deepEqual(payload.word_log, ["equanimity", "forfeiture", "composure"]);
+  assert.equal(payload.selected_answer, "Composure");
+  assert.equal(payload.correct_answer, "Composure");
+  assert.equal(payload.result, "correct");
 });
 
 test("captures skip as an incorrect answer for the pre-click quiz word", async () => {

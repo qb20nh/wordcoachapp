@@ -24,6 +24,7 @@ contextBridge.exposeInMainWorld("wordCoach", {
   answerReview: (word, answer) => ipcRenderer.invoke("wordcoach:answer-review", word, answer),
   setUiOverlayOpen: (open) => ipcRenderer.invoke("wordcoach:set-ui-overlay-open", open),
   openGoogleSignIn: () => ipcRenderer.invoke("wordcoach:open-google-sign-in"),
+  logoutGoogle: () => ipcRenderer.invoke("wordcoach:logout-google"),
   reloadCoach: () => ipcRenderer.invoke("wordcoach:reload-coach"),
   reloadDictionary: () => ipcRenderer.invoke("wordcoach:reload-dictionary"),
   dictionaryBack: () => ipcRenderer.invoke("wordcoach:dictionary-back"),

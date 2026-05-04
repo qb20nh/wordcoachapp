@@ -143,6 +143,7 @@ type AppSnapshot = {
   locale_options: LocaleOption[];
   messages: Record<string, string>;
   current_word: string;
+  google_signed_in: boolean;
   proxy_addr: string;
   proxy_blocked_hosts: string[];
   adblock: AdblockStatus;
@@ -175,6 +176,7 @@ declare global {
       answerReview: (word: string, answer: string) => Promise<ReviewAnswerResult | null>;
       setUiOverlayOpen: (open: boolean) => Promise<void>;
       openGoogleSignIn: () => Promise<void>;
+      logoutGoogle: () => Promise<boolean>;
       reloadCoach: () => Promise<void>;
       reloadDictionary: () => Promise<void>;
       dictionaryBack: () => Promise<void>;

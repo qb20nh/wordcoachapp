@@ -12,6 +12,10 @@
   box-sizing: border-box;
 }
 
+[hidden] {
+  display: none !important;
+}
+
 body {
   margin: 0;
   min-width: 860px;
@@ -137,10 +141,39 @@ button:disabled {
 }
 
 .study-summary {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+  border: 1px solid #d7e1eb;
+  border-radius: 8px;
+  background: #ffffff;
+  padding: 9px 10px;
+}
+
+.study-main {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.study-total {
+  min-width: 0;
+  overflow: hidden;
+  color: #1f2933;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 14px;
+  line-height: 1.2;
+}
+
+.study-secondary {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
-  margin-bottom: 8px;
+  justify-content: flex-end;
+  gap: 5px;
+  max-width: 180px;
 }
 
 .study-pill {
@@ -160,14 +193,12 @@ button:disabled {
 
 .study-progress {
   position: relative;
-  flex: 1 1 90px;
-  min-width: 64px;
-  max-width: 150px;
-  height: 22px;
+  width: 100%;
+  height: 8px;
   overflow: hidden;
-  border: 1px solid #c8d1db;
+  border: 0;
   border-radius: 999px;
-  background: #ffffff;
+  background: #e5ebf1;
 }
 
 .study-progress-fill {
@@ -177,41 +208,9 @@ button:disabled {
   background: #6ee7b7;
 }
 
-.study-week {
-  display: grid;
-  grid-template-columns: repeat(7, 13px);
-  align-items: end;
-  gap: 4px;
-  min-height: 22px;
-  margin-left: auto;
-}
-
-.study-day {
-  display: block;
-  width: 13px;
-  height: 13px;
-  border: 1px solid #c8d1db;
-  border-radius: 3px;
-  background: #ffffff;
-}
-
-.study-day.is-active {
-  background: #dbeafe;
-  border-color: #93c5fd;
-}
-
-.study-day.is-target {
-  background: #d1fae5;
-  border-color: #6ee7b7;
-}
-
-.study-day.is-today {
-  box-shadow: 0 0 0 1px #1f2933;
-}
-
 .history-list {
   display: grid;
-  gap: 8px;
+  gap: 10px;
 }
 
 .history-notice {
@@ -273,16 +272,15 @@ button:disabled {
   display: flex;
   flex-wrap: wrap;
   align-content: flex-start;
-  gap: 6px;
-  padding-bottom: 8px;
+  gap: 7px;
+  padding-bottom: 10px;
   border-bottom: 1px solid #e1e7ed;
 }
 
 .review-session {
-  margin: -2px -4px 0;
-  padding: 6px 4px 8px;
-  border-radius: 6px;
-  background: #fff8e5;
+  display: grid;
+  gap: 7px;
+  margin: 0;
 }
 
 .history-session:last-child {
@@ -291,12 +289,11 @@ button:disabled {
 
 .history-section-label {
   flex: 0 0 100%;
-  color: #65758a;
-  font-size: 10px;
+  color: #25313d;
+  font-size: 12px;
   font-weight: 700;
-  letter-spacing: 0.04em;
-  line-height: 1;
-  text-transform: uppercase;
+  letter-spacing: 0;
+  line-height: 1.2;
 }
 
 .history-word {
@@ -327,16 +324,6 @@ button:disabled {
   text-align: left;
 }
 
-.history-word-count {
-  flex: 0 0 auto;
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--history-word-color) 14%, transparent);
-  padding: 1px 5px;
-  font-size: 10px;
-  font-weight: 700;
-  line-height: 1.1;
-}
-
 .history-word-main {
   display: inline-flex;
   align-items: center;
@@ -345,36 +332,33 @@ button:disabled {
   min-width: 0;
 }
 
-.history-word-label,
-.history-word-detail {
+.history-word-label {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-.history-word-detail {
-  max-width: 220px;
-  white-space: nowrap;
-  font-size: 11px;
-  font-weight: 600;
-  opacity: 0.78;
-}
-
 .review-word-row {
-  display: inline-flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: stretch;
-  gap: 3px;
+  gap: 6px;
+  width: 100%;
   max-width: 100%;
 }
 
 .review-word-row .history-word.is-review {
+  width: 100%;
   margin: 0;
 }
 
 .review-choice-list {
-  display: inline-flex;
+  display: flex;
+  grid-column: 1 / -1;
+  grid-row: 2;
+  flex-wrap: wrap;
   align-items: stretch;
-  gap: 3px;
+  gap: 5px;
   max-width: 100%;
 }
 
@@ -384,7 +368,9 @@ button:disabled {
   --review-choice-color: #25313d;
   --review-choice-hover-bg: #edf2f7;
   --review-choice-hover-border: #8aa3bd;
-  max-width: 120px;
+  flex: 1 1 120px;
+  min-height: 32px;
+  max-width: 100%;
   margin: 0;
   border: 1px solid var(--review-choice-border);
   border-radius: 999px;
@@ -418,14 +404,19 @@ button:disabled {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 28px;
-  min-width: 28px;
+  gap: 5px;
+  min-width: 0;
+  min-height: 34px;
   margin: 0;
   border: 1px solid var(--review-complete-border);
   border-radius: 999px;
   background: var(--review-complete-bg);
   color: var(--review-complete-color);
+  padding: 4px 9px;
   cursor: pointer;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.2;
 }
 
 .review-complete:hover {
@@ -442,6 +433,30 @@ button:disabled {
   width: 14px;
   height: 14px;
   stroke-width: 2.4;
+}
+
+.history-later {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid #e1e7ed;
+  color: #536477;
+  font-size: 12px;
+  line-height: 1.2;
+}
+
+.history-later-label {
+  font-weight: 700;
+}
+
+.history-later-count {
+  min-width: 0;
+  overflow: hidden;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .history-word:hover {
@@ -465,28 +480,14 @@ button:disabled {
   --history-word-hover-border: #df6f66;
 }
 
-.history-word.is-upcoming {
-  --history-word-bg: #edf7ff;
-  --history-word-border: #9cc6e9;
-  --history-word-color: #1e547a;
-  --history-word-hover-bg: #dcefff;
-  --history-word-hover-border: #6ea8dc;
-  flex-direction: column;
-  align-items: flex-start;
-  border-radius: 6px;
-  white-space: normal;
-}
-
 .history-word.is-review {
   --history-word-bg: #fff1c2;
   --history-word-border: #d6a431;
   --history-word-color: #6b4700;
   --history-word-hover-bg: #ffe7a3;
   --history-word-hover-border: #bd850f;
-  flex-direction: column;
-  align-items: flex-start;
+  align-items: center;
   border-radius: 6px;
-  white-space: normal;
 }
 
 .settings-overlay {
@@ -580,25 +581,30 @@ button:disabled {
 
 .toast {
   position: fixed;
-  top: 84px;
-  right: 10px;
-  max-width: 360px;
+  top: 48px;
+  left: 50%;
+  z-index: 20;
+  max-width: min(360px, calc(100vw - 260px));
+  overflow: hidden;
   padding: 9px 11px;
   border-radius: 8px;
   background: #1f2933;
   color: #ffffff;
   opacity: 0;
-  transform: translateY(8px);
+  transform: translate(-50%, 6px);
   pointer-events: none;
   transition:
     opacity 160ms ease,
     transform 160ms ease;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-size: 13px;
 }
 
 .toast.show {
   opacity: 1;
-  transform: translateY(0);
+  transform: translate(-50%, 0);
 }
 
 @media (prefers-color-scheme: dark) {
@@ -635,6 +641,15 @@ button:disabled {
     background: #101317;
   }
 
+  :root:not([data-wordcoach-color-scheme]) .study-summary {
+    border-color: #313943;
+    background: #151a20;
+  }
+
+  :root:not([data-wordcoach-color-scheme]) .study-total {
+    color: #d9e0e7;
+  }
+
   :root:not([data-wordcoach-color-scheme]) .study-pill {
     border-color: #313943;
     background: #191f26;
@@ -650,27 +665,13 @@ button:disabled {
     background: #2f8a46;
   }
 
-  :root:not([data-wordcoach-color-scheme]) .study-day {
-    border-color: #313943;
-    background: #191f26;
-  }
-
-  :root:not([data-wordcoach-color-scheme]) .study-day.is-active {
-    border-color: #315f9c;
-    background: #17304f;
-  }
-
-  :root:not([data-wordcoach-color-scheme]) .study-day.is-target {
-    border-color: #2f8a46;
-    background: #12351f;
-  }
-
-  :root:not([data-wordcoach-color-scheme]) .study-day.is-today {
-    box-shadow: 0 0 0 1px #d9e0e7;
-  }
-
   :root:not([data-wordcoach-color-scheme]) .history-session {
     border-bottom-color: #2a323b;
+  }
+
+  :root:not([data-wordcoach-color-scheme]) .history-later {
+    border-bottom-color: #2a323b;
+    color: #98a6b5;
   }
 
   :root:not([data-wordcoach-color-scheme]) .history-notice {
@@ -690,10 +691,6 @@ button:disabled {
 
   :root:not([data-wordcoach-color-scheme]) .history-empty-body {
     color: #98a6b5;
-  }
-
-  :root:not([data-wordcoach-color-scheme]) .review-session {
-    background: #241d10;
   }
 
   :root:not([data-wordcoach-color-scheme]) .history-section-label {
@@ -722,14 +719,6 @@ button:disabled {
     --history-word-color: #ffc9c4;
     --history-word-hover-bg: #4a211f;
     --history-word-hover-border: #b65a53;
-  }
-
-  :root:not([data-wordcoach-color-scheme]) .history-word.is-upcoming {
-    --history-word-bg: #122c40;
-    --history-word-border: #2f719f;
-    --history-word-color: #b9e2ff;
-    --history-word-hover-bg: #173952;
-    --history-word-hover-border: #4b94c7;
   }
 
   :root:not([data-wordcoach-color-scheme]) .history-word.is-review {
@@ -818,6 +807,15 @@ button:disabled {
   background: #101317;
 }
 
+:root[data-wordcoach-color-scheme="dark"] .study-summary {
+  border-color: #313943;
+  background: #151a20;
+}
+
+:root[data-wordcoach-color-scheme="dark"] .study-total {
+  color: #d9e0e7;
+}
+
 :root[data-wordcoach-color-scheme="dark"] .study-pill {
   border-color: #313943;
   background: #191f26;
@@ -833,27 +831,13 @@ button:disabled {
   background: #2f8a46;
 }
 
-:root[data-wordcoach-color-scheme="dark"] .study-day {
-  border-color: #313943;
-  background: #191f26;
-}
-
-:root[data-wordcoach-color-scheme="dark"] .study-day.is-active {
-  border-color: #315f9c;
-  background: #17304f;
-}
-
-:root[data-wordcoach-color-scheme="dark"] .study-day.is-target {
-  border-color: #2f8a46;
-  background: #12351f;
-}
-
-:root[data-wordcoach-color-scheme="dark"] .study-day.is-today {
-  box-shadow: 0 0 0 1px #d9e0e7;
-}
-
 :root[data-wordcoach-color-scheme="dark"] .history-session {
   border-bottom-color: #2a323b;
+}
+
+:root[data-wordcoach-color-scheme="dark"] .history-later {
+  border-bottom-color: #2a323b;
+  color: #98a6b5;
 }
 
 :root[data-wordcoach-color-scheme="dark"] .history-notice {
@@ -873,10 +857,6 @@ button:disabled {
 
 :root[data-wordcoach-color-scheme="dark"] .history-empty-body {
   color: #98a6b5;
-}
-
-:root[data-wordcoach-color-scheme="dark"] .review-session {
-  background: #241d10;
 }
 
 :root[data-wordcoach-color-scheme="dark"] .history-section-label {
@@ -905,14 +885,6 @@ button:disabled {
   --history-word-color: #ffc9c4;
   --history-word-hover-bg: #4a211f;
   --history-word-hover-border: #b65a53;
-}
-
-:root[data-wordcoach-color-scheme="dark"] .history-word.is-upcoming {
-  --history-word-bg: #122c40;
-  --history-word-border: #2f719f;
-  --history-word-color: #b9e2ff;
-  --history-word-hover-bg: #173952;
-  --history-word-hover-border: #4b94c7;
 }
 
 :root[data-wordcoach-color-scheme="dark"] .history-word.is-review {

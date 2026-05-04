@@ -5,6 +5,7 @@ import {
   ChevronRight,
   createIcons,
   LogIn,
+  LogOut,
   Plus,
   RefreshCw,
   Search,
@@ -12,7 +13,7 @@ import {
   X
 } from "lucide";
 
-const ICONS = { Check, ChevronLeft, ChevronRight, LogIn, Plus, RefreshCw, Search, Settings, X };
+const ICONS = { Check, ChevronLeft, ChevronRight, LogIn, LogOut, Plus, RefreshCw, Search, Settings, X };
 const ICON_ATTRS = {
   "aria-hidden": "true",
   focusable: "false"
@@ -164,6 +165,7 @@ type AppSnapshot = {
   locale_options: LocaleOption[];
   messages: Record<string, string>;
   current_word: string;
+  google_signed_in: boolean;
   proxy_addr: string;
   proxy_blocked_hosts: string[];
   adblock: AdblockStatus;
@@ -196,6 +198,7 @@ app.innerHTML = `
       <div class="toolbar-group toolbar-left" aria-label="Google Word Coach controls">
         <button id="reloadCoach" class="icon-button" type="button" aria-label="Reload Word Coach" title="Reload Word Coach"><i data-lucide="refresh-cw"></i></button>
         <button id="googleSignIn" class="icon-button" type="button" aria-label="Google sign in" title="Google sign in"><i data-lucide="log-in"></i></button>
+        <button id="googleLogout" class="icon-button" type="button" aria-label="Log out of Google" title="Log out of Google" hidden><i data-lucide="log-out"></i></button>
       </div>
       <div class="toolbar-group toolbar-right" aria-label="Dictionary controls">
         <button id="dictionaryBack" class="icon-button" type="button" aria-label="Dictionary back" title="Dictionary back"><i data-lucide="chevron-left"></i></button>
@@ -278,6 +281,7 @@ const dictionaryBack = document.querySelector<HTMLButtonElement>("#dictionaryBac
 const dictionaryForward = document.querySelector<HTMLButtonElement>("#dictionaryForward")!;
 const dictionaryRefresh = document.querySelector<HTMLButtonElement>("#dictionaryRefresh")!;
 const googleSignIn = document.querySelector<HTMLButtonElement>("#googleSignIn")!;
+const googleLogout = document.querySelector<HTMLButtonElement>("#googleLogout")!;
 const exportData = document.querySelector<HTMLButtonElement>("#exportData")!;
 const importData = document.querySelector<HTMLButtonElement>("#importData")!;
 const updateFilters = document.querySelector<HTMLButtonElement>("#updateFilters")!;
@@ -312,8 +316,12 @@ const fallbackMessages: Record<string, string> = {
   google_word_coach_controls: "Google Word Coach controls",
   reload_word_coach: "Reload Word Coach",
   google_sign_in: "Google sign in",
+  google_logout: "Log out of Google",
   review_queue: "Review",
+  review_now: "Practice now",
   review_upcoming: "Upcoming",
+  review_later: "Later",
+  review_later_count: "{count} for later",
   review_word_label: "Review {word}: {count} mistakes, last wrong {time}",
   review_upcoming_word_label: "Upcoming {word}: {count} mistakes, due {time}",
   review_due_at: "Due {time}",
@@ -321,6 +329,7 @@ const fallbackMessages: Record<string, string> = {
   review_answer_detail: "Picked {selected}; Answer {correct}",
   review_answer_only: "Answer {correct}",
   review_mark_known: "Mark {word} reviewed",
+  review_known: "Known",
   review_marked_known: "{word} reviewed",
   review_choose_answer: "Review {word}: choose {answer}",
   review_answer_correct: "{word} correct",
@@ -382,6 +391,11 @@ const fallbackMessages: Record<string, string> = {
   word_coach_reloaded: "Word Coach reloaded",
   dictionary_reloaded: "Dictionary reloaded",
   opening_google_sign_in: "Opening Google sign in",
+  google_logged_out: "Logged out of Google",
+  google_logout_confirm_title: "Log out of Google?",
+  google_logout_confirm_message: "Clear Google account data from Word Coach?",
+  google_logout_confirm_detail:
+    "This removes Google cookies and site data from this app session, then reloads Word Coach.",
   filter_update_failed: "Filter update failed",
   filters_updated: "Filters updated",
   exported_path: "Exported {path}",
@@ -396,11 +410,13 @@ const fallbackMessages: Record<string, string> = {
   import_duplicate_records: "Skipped {count} duplicate records",
   history_skipped_records: "{count} incomplete records hidden",
   history_duplicate_records: "{count} duplicate records hidden",
+  history_recent_words: "Recent words",
   history_empty_title: "No words yet",
   history_empty_body: "Today starts with the first captured answer.",
   history_empty_action: "Reload Word Coach",
   prerender_confirm:
-    "Prerender keeps all six dictionary pages loaded in the background. This can use much more RAM, CPU, and network. Enable it?"
+    "Prerender keeps all six dictionary pages loaded in the background. This can use much more RAM, CPU, and network. Enable it?",
+  cancel: "Cancel"
 };
 let activeMessages: Record<string, string> = fallbackMessages;
 
@@ -481,6 +497,7 @@ function applyStaticTranslations() {
   );
   setLabel(reloadCoach, "reload_word_coach");
   setLabel(googleSignIn, "google_sign_in");
+  setLabel(googleLogout, "google_logout");
   document.querySelector(".toolbar-right")?.setAttribute("aria-label", message("dictionary_controls"));
   setLabel(dictionaryBack, "dictionary_back");
   setLabel(dictionaryForward, "dictionary_forward");
@@ -502,6 +519,11 @@ function applyStaticTranslations() {
   exportData.textContent = message("export");
   importData.textContent = message("import");
   updateFilters.textContent = message("update_filters");
+}
+
+function updateGoogleSessionControls(signedIn: boolean) {
+  googleSignIn.hidden = signedIn;
+  googleLogout.hidden = !signedIn;
 }
 
 function showToast(message: string) {
@@ -571,7 +593,8 @@ function wordFromQuestion(question: string) {
   const text = quizText(question);
   const wordToken = "[A-Za-z][A-Za-z'-]*|[\\p{Script=Hangul}]+?";
   const phrase = `((?:${wordToken})(?:\\s+(?:${wordToken})){0,3})`;
-  const optionalKoreanPrefix = "(?:다음\\s*중\\s*)?";
+  const optionalKoreanPrefix =
+    "(?:(?:다음\\s*중|새로운\\s+단어(?:를|을)?\\s+배워\\s*보세요)\\s*)?";
   const koreanParticle = "(?:과\\(와\\)|와\\(과\\)|와|과|랑|하고|의|에)";
   const englishWordPrefix = "(?:the\\s+)?(?:word\\s+)?";
   const quoteOpen = "[\"'“‘「『]";
@@ -630,7 +653,7 @@ function renderHistory(
     )
     .join("|")
     .concat(
-      `:${activeResolvedLocale}:${message("review_queue")}:${message("review_upcoming")}:${message("review_due_at")}:${message("study_today")}:${message("study_remaining")}:${message("study_goal_done")}:${message("study_accuracy")}:${message("review_answer_detail")}:${message("history_empty_title")}:${message("history_empty_body")}:${message("history_empty_action")}:${localDayKey(Date.now())}`
+      `:${activeResolvedLocale}:${message("review_now")}:${message("review_upcoming")}:${message("review_later")}:${message("review_later_count")}:${message("review_due_at")}:${message("review_known")}:${message("history_recent_words")}:${message("study_today")}:${message("study_remaining")}:${message("study_goal_done")}:${message("review_answer_detail")}:${message("history_empty_title")}:${message("history_empty_body")}:${message("history_empty_action")}:${localDayKey(Date.now())}`
     )
     .concat(
       `:${studySummarySignature(summary)}:${reviewSummary.due_count}:${reviewSummary.pending_count}:${reviewSummary.next_due_at || ""}:${historySummary.skipped_records}:${historySummary.duplicate_records}:${reviewItems
@@ -650,11 +673,11 @@ function renderHistory(
   }
   lastHistorySignature = signature;
   const reviewKeys = new Set([...reviewItems, ...reviewBacklog].map((item) => item.key));
-  const sessions = wordSessions(records, 5, reviewKeys).slice(0, 4);
+  const recentWords = recentHistoryWords(records, 12, reviewKeys);
   renderStudySummary(summary);
   const noticeMarkup = historyNoticeMarkup(historySummary);
 
-  if (reviewItems.length === 0 && reviewBacklog.length === 0 && sessions.length === 0) {
+  if (reviewItems.length === 0 && reviewBacklog.length === 0 && recentWords.length === 0) {
     historyList.innerHTML = noticeMarkup + emptyHistoryMarkup();
     renderIcons(historyList);
     return;
@@ -664,8 +687,8 @@ function renderHistory(
     reviewItems.length === 0
       ? ""
       : `
-        <section class="history-session review-session" aria-label="${escapeHtml(message("review_queue"))}">
-          <div class="history-section-label">${escapeHtml(message("review_queue"))}</div>
+        <section class="history-session review-session" aria-label="${escapeHtml(message("review_now"))}">
+          <div class="history-section-label">${escapeHtml(message("review_now"))}</div>
           ${reviewItems.map(reviewItemMarkup).join("")}
         </section>
       `;
@@ -673,21 +696,18 @@ function renderHistory(
     reviewBacklog.length === 0
       ? ""
       : `
-        <section class="history-session upcoming-session" aria-label="${escapeHtml(message("review_upcoming"))}">
-          <div class="history-section-label">${escapeHtml(message("review_upcoming"))}</div>
-          ${reviewBacklog.map(reviewBacklogItemMarkup).join("")}
+        <section class="history-later" aria-label="${escapeHtml(message("review_upcoming"))}">
+          <span class="history-later-label">${escapeHtml(message("review_later"))}</span>
+          <span class="history-later-count">${escapeHtml(message("review_later_count", { count: reviewBacklog.length }))}</span>
         </section>
       `;
-
-  historyList.innerHTML =
-    noticeMarkup +
-    reviewMarkup +
-    backlogMarkup +
-    sessions
-    .map(
-      (session) => `
-        <section class="history-session">
-          ${session
+  const recentMarkup =
+    recentWords.length === 0
+      ? ""
+      : `
+        <section class="history-session recent-words" aria-label="${escapeHtml(message("history_recent_words"))}">
+          <div class="history-section-label">${escapeHtml(message("history_recent_words"))}</div>
+          ${recentWords
             .map(
               (item) => `
                 <button class="${historyWordClass(item.result)}" type="button" data-word="${escapeHtml(item.word)}">
@@ -697,9 +717,13 @@ function renderHistory(
             )
             .join("")}
         </section>
-      `
-    )
-    .join("");
+      `;
+
+  historyList.innerHTML =
+    noticeMarkup +
+    reviewMarkup +
+    backlogMarkup +
+    recentMarkup;
   renderIcons(historyList);
 }
 
@@ -733,7 +757,6 @@ function emptyHistoryMarkup() {
 
 function reviewItemMarkup(item: ReviewQueueItem) {
   const choices = reviewChoices(item);
-  const detail = reviewDetailText(item);
   return `
     <span class="review-word-row">
       <button
@@ -741,15 +764,12 @@ function reviewItemMarkup(item: ReviewQueueItem) {
         type="button"
         data-word="${escapeHtml(item.word)}"
         data-review="true"
-        data-mistakes="${item.mistakes}"
         aria-label="${escapeHtml(reviewWordLabel(item))}"
         title="${escapeHtml(reviewWordLabel(item))}"
       >
         <span class="history-word-main">
           <span class="history-word-label">${escapeHtml(item.word)}</span>
-          ${item.mistakes > 1 ? `<span class="history-word-count">x${item.mistakes}</span>` : ""}
         </span>
-        ${detail ? `<span class="history-word-detail">${escapeHtml(detail)}</span>` : ""}
       </button>
       ${
         choices.length > 0
@@ -783,43 +803,9 @@ function reviewItemMarkup(item: ReviewQueueItem) {
         title="${escapeHtml(message("review_mark_known", { word: item.word }))}"
       >
         <i data-lucide="check"></i>
+        <span class="review-complete-label">${escapeHtml(message("review_known"))}</span>
       </button>
     </span>
-  `;
-}
-
-function reviewBacklogItemMarkup(item: ReviewQueueItem) {
-  const dueText = message("review_due_at", { time: formatTime(item.due_at) });
-  const answerDetail = reviewDetailText(item);
-  const detail = answerDetail ? `${dueText}. ${answerDetail}` : dueText;
-  return `
-    <button
-      class="${historyWordClass(item.result, false, true)}"
-      type="button"
-      data-word="${escapeHtml(item.word)}"
-      data-review-upcoming="true"
-      data-mistakes="${item.mistakes}"
-      aria-label="${escapeHtml(
-        message("review_upcoming_word_label", {
-          word: item.word,
-          count: item.mistakes,
-          time: formatTime(item.due_at)
-        })
-      )}"
-      title="${escapeHtml(
-        message("review_upcoming_word_label", {
-          word: item.word,
-          count: item.mistakes,
-          time: formatTime(item.due_at)
-        })
-      )}"
-    >
-      <span class="history-word-main">
-        <span class="history-word-label">${escapeHtml(item.word)}</span>
-        ${item.mistakes > 1 ? `<span class="history-word-count">x${item.mistakes}</span>` : ""}
-      </span>
-      <span class="history-word-detail">${escapeHtml(detail)}</span>
-    </button>
   `;
 }
 
@@ -956,46 +942,24 @@ function renderStudySummary(summary: StudySummary) {
         : message("study_review", { count: 0 });
   studySummary.setAttribute("aria-label", message("study_summary"));
   studySummary.innerHTML = `
-    <span class="study-pill">${escapeHtml(todayText)}</span>
-    <span class="study-pill">${escapeHtml(remainingText)}</span>
-    <span
-      class="study-progress"
-      role="progressbar"
-      aria-valuemin="0"
-      aria-valuemax="100"
-      aria-valuenow="${summary.progress}"
-      data-progress="${summary.progress}"
-    >
-      <span class="study-progress-fill" style="width: ${summary.progress}%"></span>
-    </span>
-    ${
-      summary.accuracy === null
-        ? ""
-        : `<span class="study-pill">${escapeHtml(message("study_accuracy", { count: summary.accuracy }))}</span>`
-    }
-    <span class="study-pill">${escapeHtml(message("study_streak", { count: summary.streak }))}</span>
-    <span class="study-pill">${escapeHtml(reviewText)}</span>
-    ${
-      summary.pendingReview > summary.review
-        ? `<span class="study-pill">${escapeHtml(message("study_pending_review", { count: summary.pendingReview }))}</span>`
-        : ""
-    }
-    <span class="study-week" aria-label="${escapeHtml(message("study_week"))}">
-      ${summary.days
-        .map(
-          (day) => `
-            <span
-              class="${studyDayClass(day)}"
-              data-study-day="${escapeHtml(day.key)}"
-              data-count="${day.count}"
-              data-today="${day.today ? "true" : "false"}"
-              aria-label="${escapeHtml(studyDayLabel(day))}"
-              title="${escapeHtml(studyDayLabel(day))}"
-            ></span>
-          `
-        )
-        .join("")}
-    </span>
+    <div class="study-main">
+      <strong class="study-total">${escapeHtml(todayText)}</strong>
+      <span
+        class="study-progress"
+        role="progressbar"
+        aria-valuemin="0"
+        aria-valuemax="100"
+        aria-valuenow="${summary.progress}"
+        data-progress="${summary.progress}"
+      >
+        <span class="study-progress-fill" style="width: ${summary.progress}%"></span>
+      </span>
+    </div>
+    <div class="study-secondary">
+      <span class="study-pill">${escapeHtml(remainingText)}</span>
+      ${summary.review > 0 ? `<span class="study-pill">${escapeHtml(reviewText)}</span>` : ""}
+      ${summary.streak > 0 ? `<span class="study-pill">${escapeHtml(message("study_streak", { count: summary.streak }))}</span>` : ""}
+    </div>
   `;
 }
 
@@ -1039,21 +1003,6 @@ function updateDocumentTitle(summary: ReviewSummary) {
   document.title = dueCount > 0 ? `${message("review_due_now", { count: dueCount })} - ${appTitle}` : appTitle;
 }
 
-function studyDayClass(day: StudyDay) {
-  return [
-    "study-day",
-    day.count > 0 ? "is-active" : "",
-    day.metTarget ? "is-target" : "",
-    day.today ? "is-today" : ""
-  ]
-    .filter(Boolean)
-    .join(" ");
-}
-
-function studyDayLabel(day: StudyDay) {
-  return `${day.label}: ${day.count}${day.score > 0 ? ` score ${day.score}` : ""}`;
-}
-
 function normalizedDailyGoal(goal: number) {
   return Number.isFinite(goal) && goal >= 1 && goal <= 100 ? Math.round(goal) : DAILY_STUDY_TARGET;
 }
@@ -1070,28 +1019,24 @@ function localDayKey(epochMs: number) {
   return `${year}-${month}-${day}`;
 }
 
-function wordSessions(records: HistoryRecord[], size: number, excludeKeys = new Set<string>()) {
-  const sessions: WordLogItem[][] = [];
-  for (let index = 0; index < records.length; index += size) {
-    const seen = new Set<string>();
-    const words: WordLogItem[] = [];
-    for (const record of records.slice(index, index + size)) {
-      const result = normalizeHistoryResult(record.result);
-      const recordWords = recordDisplayWords(record);
-      for (const word of recordWords) {
-        const key = wordKey(word);
-        if (!key || seen.has(key) || excludeKeys.has(key)) {
-          continue;
-        }
-        seen.add(key);
-        words.push({ word, result, key });
+function recentHistoryWords(records: HistoryRecord[], limit: number, excludeKeys = new Set<string>()) {
+  const seen = new Set<string>();
+  const words: WordLogItem[] = [];
+  for (const record of records) {
+    const result = normalizeHistoryResult(record.result);
+    for (const word of recordDisplayWords(record)) {
+      const key = wordKey(word);
+      if (!key || seen.has(key) || excludeKeys.has(key)) {
+        continue;
+      }
+      seen.add(key);
+      words.push({ word, result, key });
+      if (words.length >= limit) {
+        return words;
       }
     }
-    if (words.length > 0) {
-      sessions.push(words);
-    }
   }
-  return sessions;
+  return words;
 }
 
 function recordDisplayWords(record: HistoryRecord) {
@@ -1198,9 +1143,9 @@ function normalizeHistoryResult(result: string | null) {
   return null;
 }
 
-function historyWordClass(result: string | null, review = false, upcoming = false) {
+function historyWordClass(result: string | null, review = false) {
   const state = normalizeHistoryResult(result);
-  return `history-word${review ? " is-review" : ""}${upcoming ? " is-upcoming" : ""}${state ? ` is-${state}` : ""}`;
+  return `history-word${review ? " is-review" : ""}${state ? ` is-${state}` : ""}`;
 }
 
 function renderProviderOptions(providers: DictionaryProviderOption[]) {
@@ -1327,6 +1272,7 @@ function applySnapshot(snapshot: AppSnapshot) {
     lookupInput.value = snapshot.current_word;
   }
   lastCurrentWord = snapshot.current_word;
+  updateGoogleSessionControls(snapshot.google_signed_in);
   filterStatus.textContent = formatAdblockStatus(snapshot.adblock);
   updateFilters.disabled = snapshot.adblock.updating;
   renderHistory(
@@ -1534,6 +1480,14 @@ googleSignIn.addEventListener("click", () => {
   void runUiAction(async () => {
     await window.wordCoach.openGoogleSignIn();
     showToast(message("opening_google_sign_in"));
+  });
+});
+
+googleLogout.addEventListener("click", () => {
+  void runUiAction(async () => {
+    if (await window.wordCoach.logoutGoogle()) {
+      showToast(message("google_logged_out"));
+    }
   });
 });
 

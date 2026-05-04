@@ -1,5 +1,8 @@
 (() => {
   const VERSION = 2;
+  const BOOT_HIDE_STYLE_ID = "wordcoach-boot-hide-style";
+  const BOOT_HIDE_FONT_TIMEOUT_MS = 500;
+  const BOOT_HIDE_SETTLE_MS = 80;
   const fallbackCss = `
     html, body {
       margin: 0 !important;
@@ -62,6 +65,46 @@
     style.id = "word-coach-style";
     style.textContent = `${cleanedUserCss()}\n${fallbackCss}`;
     (document.head || document.documentElement).appendChild(style);
+  }
+
+  function releaseBootHide() {
+    const root = document.documentElement;
+    if (!root?.dataset?.wordcoachBootHidden) {
+      return;
+    }
+    let released = false;
+    const release = () => {
+      if (released) {
+        return;
+      }
+      released = true;
+      delete root.dataset.wordcoachBootHidden;
+      root.dataset.wordcoachBootReady = "true";
+      document.getElementById(BOOT_HIDE_STYLE_ID)?.remove?.();
+    };
+    const scheduleAfterPaint = () => {
+      const requestFrame = window.requestAnimationFrame?.bind(window);
+      if (requestFrame) {
+        requestFrame(() => requestFrame(() => window.setTimeout(release, BOOT_HIDE_SETTLE_MS)));
+        return;
+      }
+      window.setTimeout(release, BOOT_HIDE_SETTLE_MS);
+    };
+    const fontsReady = document.fonts?.ready;
+    if (fontsReady && typeof fontsReady.then === "function") {
+      let settled = false;
+      const done = () => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        scheduleAfterPaint();
+      };
+      fontsReady.then(done, done);
+      window.setTimeout(done, BOOT_HIDE_FONT_TIMEOUT_MS);
+      return;
+    }
+    scheduleAfterPaint();
   }
 
   function ready(fn) {
@@ -267,7 +310,8 @@
     const text = quizText(line);
     const wordToken = "[A-Za-z][A-Za-z'-]*|[\\p{Script=Hangul}]+?";
     const phrase = `((?:${wordToken})(?:\\s+(?:${wordToken})){0,3})`;
-    const optionalKoreanPrefix = "(?:다음\\s*중\\s*)?";
+    const optionalKoreanPrefix =
+      "(?:(?:다음\\s*중|새로운\\s+단어(?:를|을)?\\s+배워\\s*보세요)\\s*)?";
     const koreanParticle = "(?:과\\(와\\)|와\\(과\\)|와|과|랑|하고|의|에)";
     const englishWordPrefix = "(?:the\\s+)?(?:word\\s+)?";
     const quoteOpen = "[\"'“‘「『]";
@@ -434,6 +478,15 @@
     );
   }
 
+  function selectionContextFresh(elapsedMs) {
+    return (
+      selectedContext &&
+      Number.isFinite(elapsedMs) &&
+      elapsedMs >= 0 &&
+      elapsedMs <= 2_000
+    );
+  }
+
   function snapshot() {
     const root = gameRoot();
     if (!root) {
@@ -442,23 +495,39 @@
     const textLines = lines(root);
     const currentOptions = inferOptions(root, textLines);
     const unknownSelected = isUnknownAnswer(selectedAnswer);
-    const options = unknownSelected && selectedContext?.options?.length ? selectedContext.options : currentOptions;
-    const question = unknownSelected && selectedContext?.question ? selectedContext.question : inferQuestion(textLines);
+    const elapsedMs = selectedAt ? Date.now() - selectedAt : 0;
+    const freshContext = selectionContextFresh(elapsedMs);
+    const currentQuestion = inferQuestion(textLines);
+    const contextQuestion = freshContext ? selectedContext?.question : null;
+    const contextOptions =
+      freshContext && selectedContext?.options?.length ? selectedContext.options : null;
+    const options =
+      (unknownSelected || (contextOptions && contextOptions.length > currentOptions.length)) &&
+      contextOptions
+        ? contextOptions
+        : currentOptions;
+    const question =
+      (unknownSelected ||
+        (contextQuestion &&
+          quizText(contextQuestion).length > quizText(currentQuestion).length)) &&
+      contextQuestion
+        ? contextQuestion
+        : currentQuestion;
     const selected =
       options.find((option) => cleanWord(option) === cleanWord(selectedAnswer)) ||
       (unknownSelected ? selectedAnswer : null);
     const markedCorrect = inferCorrect(root, options);
-    const elapsedMs = selectedAt ? Date.now() - selectedAt : 0;
     const currentScore = inferScore(textLines);
     const scoreResult = resultFromScore(selected, selectedScore, currentScore, elapsedMs);
     const result = unknownSelected
       ? inferResult(textLines) || scoreResult || "incorrect"
       : resultFromSelection(selected, markedCorrect) || inferResult(textLines) || scoreResult;
     const correct = markedCorrect || correctFromResult(selected, options, result);
+    const inferredWordLog = inferWordLog(textLines, options, question);
+    const contextWordLog =
+      freshContext && selectedContext?.wordLog?.length ? selectedContext.wordLog : null;
     const wordLog =
-      unknownSelected && selectedContext?.wordLog?.length
-        ? selectedContext.wordLog
-        : inferWordLog(textLines, options, question);
+      contextWordLog?.length > inferredWordLog.length ? contextWordLog : inferredWordLog;
     return {
       id: `wc_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`,
       captured_at: Date.now(),
@@ -543,6 +612,7 @@
       attributes: true,
       attributeFilter: ["class", "style", "aria-label"]
     });
+    releaseBootHide();
   }
 
   function bindDragPan() {

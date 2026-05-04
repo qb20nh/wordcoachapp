@@ -564,7 +564,8 @@ function wordFromQuestion(question) {
   const text = quizText(question);
   const wordToken = "[A-Za-z][A-Za-z'-]*|[\\p{Script=Hangul}]+?";
   const phrase = `((?:${wordToken})(?:\\s+(?:${wordToken})){0,3})`;
-  const optionalKoreanPrefix = "(?:다음\\s*중\\s*)?";
+  const optionalKoreanPrefix =
+    "(?:(?:다음\\s*중|새로운\\s+단어(?:를|을)?\\s+배워\\s*보세요)\\s*)?";
   const koreanParticle = "(?:과\\(와\\)|와\\(과\\)|와|과|랑|하고|의|에)";
   const englishWordPrefix = "(?:the\\s+)?(?:word\\s+)?";
   const quoteOpen = "[\"'“‘「『]";
