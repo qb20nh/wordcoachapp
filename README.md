@@ -13,6 +13,9 @@ pnpm dev
 
 Dictionary panel choices: Dictionary.com, Merriam-Webster, and Naver Dictionary. The mode selector switches each provider between dictionary and thesaurus navigation; Naver stays inside English-English dictionary and English thesaurus pages.
 
+The study panel tracks today's unique review words, the remaining daily goal, progress, daily accuracy, the current study streak, seven-day activity, and words due for spaced review after mistakes. The daily goal is configurable in Settings.
+Review chips focus on the quiz prompt word, or on the correct answer when an image-style prompt has no reviewable word. They include picked-vs-correct mistake context, show upcoming scheduled difficult words, graduate after the final spaced review, and raise an in-app cue when due reviews appear.
+
 The Preload control tunes network warmup:
 
 - Off: no extra warmup
@@ -25,6 +28,9 @@ Useful commands:
 
 ```bash
 pnpm dev:ui          # renderer only
+pnpm test            # focused capture-normalization tests
+pnpm smoke:renderer  # headless built-renderer smoke test
+pnpm quality         # tests + build + renderer smoke
 pnpm check:electron  # parse-check Electron main/preload/proxy/store
 pnpm build           # renderer build + Electron parse check
 ```
@@ -35,7 +41,7 @@ Electron uses an isolated `persist:wordcoach` session for remote pages. That ses
 
 ## Data
 
-History and settings are JSON files in Electron `userData`. Export/import uses `.wcoach.json`.
+History and settings are JSON files in Electron `userData`. Export/import uses `.wcoach.json`. Incomplete legacy captures and rapid duplicate captures are hidden from study/review metrics and reported in the history panel or import toast instead of being counted as learned words.
 
 Injected remote-page scripts live in `src/injected/`. Google Word Coach receives `network_guard.js`, `word_coach.js`, and `custom.css`; dictionary pages receive only `network_guard.js`.
 

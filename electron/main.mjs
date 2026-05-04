@@ -455,6 +455,7 @@ function handleCaptureNavigation(event, url) {
     .then(() => store.insertCapture(JSON.parse(payload)))
     .then((inserted) => {
       if (inserted) {
+        focusCurrentDictionaryWord();
         sendSnapshot();
       }
     })
@@ -510,6 +511,42 @@ function registerIpc() {
     scheduleNetworkWarmup();
     sendSnapshot();
   });
+  ipcMain.handle("wordcoach:set-daily-goal", async (_event, goal) => {
+    await store.setDailyGoal(goal);
+    sendSnapshot();
+  });
+  ipcMain.handle("wordcoach:set-daily-goal-type", async (_event, type) => {
+    await store.setDailyGoalType(type);
+    sendSnapshot();
+  });
+  ipcMain.handle("wordcoach:set-daily-score-goal", async (_event, goal) => {
+    await store.setDailyScoreGoal(goal);
+    sendSnapshot();
+  });
+  ipcMain.handle("wordcoach:add-study-word", async (_event, word) => {
+    const added = await store.addStudyWord(word);
+    if (added) {
+      focusCurrentDictionaryWord();
+      sendSnapshot();
+    }
+    return added;
+  });
+  ipcMain.handle("wordcoach:mark-review-known", async (_event, word) => {
+    const marked = await store.markReviewKnown(word);
+    if (marked) {
+      focusCurrentDictionaryWord();
+      sendSnapshot();
+    }
+    return marked;
+  });
+  ipcMain.handle("wordcoach:answer-review", async (_event, word, answer) => {
+    const result = await store.answerReview(word, answer);
+    if (result) {
+      focusCurrentDictionaryWord();
+      sendSnapshot();
+    }
+    return result;
+  });
   ipcMain.handle("wordcoach:set-ui-overlay-open", (_event, open) => {
     uiOverlayOpen = Boolean(open);
     layoutRemoteViews();
@@ -556,9 +593,14 @@ function registerIpc() {
     if (result.canceled || !result.filePaths[0]) {
       return null;
     }
-    const imported = await store.importFrom(result.filePaths[0]);
+    const beforeWord = store.snapshot().current_word;
+    const summary = await store.importFrom(result.filePaths[0]);
+    const currentWord = store.snapshot().current_word;
+    if (currentWord && currentWord !== beforeWord) {
+      focusCurrentDictionaryWord();
+    }
     sendSnapshot();
-    return imported;
+    return summary;
   });
   ipcMain.handle("wordcoach:update-adblock-filters", async () => {
     const status = adblocker
@@ -587,6 +629,9 @@ function appSnapshot() {
     dark_mode_options: localizedOptions(DARK_MODE_OPTIONS, locale),
     cosmetic_adblock: snapshot.cosmetic_adblock,
     locale_choice: currentLocaleChoice(),
+    daily_goal_type: snapshot.daily_goal_type,
+    daily_goal: snapshot.daily_goal,
+    daily_score_goal: snapshot.daily_score_goal,
     resolved_locale: locale,
     locale_options: localeOptionsFor(locale),
     messages: messagesFor(locale),
@@ -601,6 +646,11 @@ function appSnapshot() {
       error: null
     },
     color_scheme: currentColorScheme(),
+    review_queue: snapshot.review_queue,
+    review_backlog: snapshot.review_backlog,
+    review_summary: snapshot.review_summary,
+    study_summary: snapshot.study_summary,
+    history_summary: snapshot.history_summary,
     history: snapshot.history
   };
 }
@@ -1855,6 +1905,16 @@ function navigateDictionary(word) {
     return;
   }
   loadAllowedUrl(dictionaryView, url);
+}
+
+function focusCurrentDictionaryWord() {
+  const currentWord = store.snapshot().current_word;
+  if (!currentWord) {
+    return false;
+  }
+  navigateDictionary(currentWord);
+  scheduleNetworkWarmup();
+  return true;
 }
 
 function currentProvider() {
